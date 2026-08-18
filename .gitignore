@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+
+# Builds
+dist/
+build/
+*.tsbuildinfo
+
+# Env & secrets
+.env
+.env.local
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.suo
+
+# Electron user data (local bindings + sync manifests)
+desktop/userData/

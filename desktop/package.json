@@ -1,0 +1,16 @@
+{
+  "name": "moondash-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "main": "main.js",
+  "scripts": {
+    "start": "node scripts/start.mjs",
+    "dev": "electron . --dev",
+    "build:web": "npm --prefix ../web run build",
+    "test:sync": "node scripts/smoke-sync.mjs",
+    "test:linked": "node scripts/smoke-linked.mjs"
+  },
+  "devDependencies": {
+    "electron": "^31.7.7"
+  }
+}

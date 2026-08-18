@@ -1,0 +1,40 @@
+{
+  "name": "moondash-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "icons": "node scripts/gen-icons.mjs",
+    "test:drag": "esbuild src/extensions/BlockDrag.ts --bundle --format=esm --platform=browser --external:@tiptap/core --external:@tiptap/pm/state --external:@tiptap/pm/model --outfile=scripts/.tmp-blockdrag.mjs && node scripts/smoke-drag.mjs && node -e \"require('fs').unlinkSync('scripts/.tmp-blockdrag.mjs')\"",
+    "test:toggle": "node scripts/smoke-toggle.mjs",
+    "test:toggle-keys": "esbuild src/extensions/Toggle.tsx --bundle --format=esm --platform=browser --jsx=automatic --external:@tiptap/core --external:@tiptap/react --external:@tiptap/pm/state --external:@tiptap/pm/model --external:lucide-react --external:react --external:react-dom --external:react/jsx-runtime --external:react-dom/client --outfile=scripts/.tmp-toggle.mjs && node scripts/smoke-toggle-keys.mjs && node -e \"require('fs').unlinkSync('scripts/.tmp-toggle.mjs')\"",
+    "test:task": "esbuild src/extensions/TaskBackspace.ts --bundle --format=esm --platform=browser --external:@tiptap/core --external:@tiptap/pm/state --external:@tiptap/pm/model --outfile=scripts/.tmp-task.mjs && esbuild src/extensions/EmptyTaskList.ts --bundle --format=esm --platform=browser --outfile=scripts/.tmp-tasklist.mjs && node scripts/smoke-task.mjs && node -e \"require('fs').unlinkSync('scripts/.tmp-task.mjs'); require('fs').unlinkSync('scripts/.tmp-tasklist.mjs')\""
+  },
+  "dependencies": {
+    "@tiptap/core": "^2.11.5",
+    "@tiptap/extension-character-count": "^2.11.5",
+    "@tiptap/extension-link": "^2.11.5",
+    "@tiptap/extension-placeholder": "^2.11.5",
+    "@tiptap/extension-task-item": "^2.11.5",
+    "@tiptap/extension-task-list": "^2.11.5",
+    "@tiptap/pm": "^2.11.5",
+    "@tiptap/react": "^2.11.5",
+    "@tiptap/starter-kit": "^2.11.5",
+    "@tiptap/suggestion": "^2.11.5",
+    "lucide-react": "^0.462.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tiptap-markdown": "^0.8.10"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11",
+    "vite-plugin-pwa": "^0.21.1"
+  }
+}

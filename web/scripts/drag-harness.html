@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>BlockDrag harness</title>
+    <style>
+      body {
+        margin: 0;
+        background: #1e1e1e;
+        color: #ddd;
+      }
+      .md-editor {
+        min-height: 220px;
+        padding: 8px 12px;
+        outline: none;
+        background: #262626;
+        border-radius: 6px;
+      }
+      .block-drop-line {
+        position: fixed;
+        height: 2px;
+        background: #4c8dff;
+        pointer-events: none;
+        opacity: 0;
+        z-index: 9999;
+        border-radius: 1px;
+      }
+      .block-drop-line.is-visible {
+        opacity: 1;
+      }
+      .block-grip {
+        position: fixed;
+        pointer-events: auto;
+        opacity: 0;
+        z-index: 9998;
+        cursor: grab;
+      }
+      .block-grip.is-visible {
+        opacity: 1;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script src="./drag-harness.bundle.js"></script>
+  </body>
+</html>
