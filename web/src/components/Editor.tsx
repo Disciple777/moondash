@@ -32,6 +32,7 @@ import {
   Plus,
   Quote,
   Redo2,
+  SquareCode,
   Strikethrough,
   Undo2,
   X
@@ -88,6 +89,9 @@ function ToolbarButton({
 
 export function Editor({ doc }: { doc: DocNode }) {
   const { activeDocContent, saveDoc, saveStatus, renameDoc, folders, memberships, removeDocFromFolder, closeDoc } = useApp()
+  const [rawView, setRawView] = useState(false)
+  const [rawText, setRawText] = useState('')
+  const rawTimerRef = useRef<number | null>(null)
   const lastSavedRef = useRef<string>('')
   const timerRef = useRef<number | null>(null)
   const [title, setTitle] = useState(doc.title)
@@ -246,6 +250,38 @@ export function Editor({ doc }: { doc: DocNode }) {
     setColorPos({ x: rect.left, y: rect.bottom + 6 })
   }
 
+  const toggleRawView = () => {
+    if (rawView) {
+      // Exiting raw view: push the edited markdown back into TipTap
+      if (editor && rawText !== lastSavedRef.current) {
+        editor.commands.setContent(rawText)
+        if (rawTimerRef.current !== null) window.clearTimeout(rawTimerRef.current)
+        rawTimerRef.current = window.setTimeout(() => {
+          void saveDoc(doc.id, rawText).then(() => {
+            lastSavedRef.current = rawText
+          })
+        }, 600)
+      }
+      setRawView(false)
+    } else {
+      // Entering raw view: extract the current markdown
+      const md = (editor?.storage.markdown.getMarkdown() as string) ?? ''
+      setRawText(md)
+      setRawView(true)
+    }
+  }
+
+  // Auto-save while typing in raw view
+  const handleRawChange = (value: string) => {
+    setRawText(value)
+    if (rawTimerRef.current !== null) window.clearTimeout(rawTimerRef.current)
+    rawTimerRef.current = window.setTimeout(() => {
+      void saveDoc(doc.id, value).then(() => {
+        lastSavedRef.current = value
+      })
+    }, 900)
+  }
+
   return (
     <div className="doc-view">
       <div className="doc-toolbar">
@@ -317,6 +353,13 @@ export function Editor({ doc }: { doc: DocNode }) {
             onClick={() => setShowFolderChips((v) => !v)}
           >
             {showFolderChips ? <FolderOpen size={15} /> : <FolderIcon size={15} />}
+          </ToolbarButton>
+          <ToolbarButton
+            title={rawView ? 'Rich view' : 'Raw markdown view'}
+            active={rawView}
+            onClick={toggleRawView}
+          >
+            <SquareCode size={15} />
           </ToolbarButton>
           <span className="tb-sep" />
           <span className={`save-status save-${saveStatus}`}>
@@ -431,12 +474,32 @@ export function Editor({ doc }: { doc: DocNode }) {
           )}
         </div>
 
-        <EditorContent editor={editor} />
+        {rawView ? (
+          <textarea
+            className="raw-editor"
+            value={rawText}
+            onChange={(e) => handleRawChange(e.target.value)}
+            spellCheck={false}
+            autoFocus
+          />
+        ) : (
+          <EditorContent editor={editor} />
+        )}
 
         <div className="doc-footer">
-          <span>{stats.words} words</span>
-          <span className="dot">·</span>
-          <span>{stats.chars} characters</span>
+          {rawView ? (
+            <>
+              <span>Raw markdown view</span>
+              <span className="dot">·</span>
+              <span>{rawText.length} characters</span>
+            </>
+          ) : (
+            <>
+              <span>{stats.words} words</span>
+              <span className="dot">·</span>
+              <span>{stats.chars} characters</span>
+            </>
+          )}
         </div>
       </div>
     </div>

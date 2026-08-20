@@ -38,7 +38,7 @@ final class FolderService
              FROM bit_folders bf
              INNER JOIN bits b ON b.id = bf.bit_id
              WHERE bf.workspace_id = :workspace_id
-             ORDER BY b.title ASC'
+             ORDER BY bf.position ASC, b.title ASC'
         );
         $foldersStmt->execute(['workspace_id' => $workspaceId]);
 
@@ -294,6 +294,52 @@ final class FolderService
                 'parent' => $folderId,
                 'child' => (int) $itemId,
             ]);
+        }
+    }
+
+    /** Reorder folders that share the same parent (or are root-level). */
+    public function reorderFolders(int $userId, int $workspaceId, ?int $parentFolderId, array $folderIds): void
+    {
+        if (!$this->workspaces->belongsToUser($userId, $workspaceId)) {
+            throw new DomainException('Workspace not found');
+        }
+
+        // Validate all folder IDs belong to this workspace
+        $placeholders = implode(',', array_fill(0, count($folderIds), '?'));
+        $checkStmt = $this->pdo->prepare(
+            "SELECT bit_id FROM bit_folders WHERE workspace_id = ? AND bit_id IN ($placeholders)"
+        );
+        $checkStmt->execute(array_merge([$workspaceId], array_map('intval', $folderIds)));
+        $valid = new Set(array_map(fn($r) => (int) $r['bit_id'], $checkStmt->fetchAll()));
+
+        $position = 1;
+        if ($parentFolderId !== null) {
+            // Reorder within a parent folder — update bit_relations positions
+            $stmt = $this->pdo->prepare(
+                "UPDATE bit_relations SET position = :position
+                 WHERE parent_bit_id = :parent AND child_bit_id = :child AND relation_type = 'member'"
+            );
+            foreach ($folderIds as $fid) {
+                if (!$valid->has((int) $fid)) continue;
+                $stmt->execute([
+                    'position' => $position++,
+                    'parent' => $parentFolderId,
+                    'child' => (int) $fid,
+                ]);
+            }
+        } else {
+            // Reorder root-level folders — update bit_folders.position
+            $stmt = $this->pdo->prepare(
+                'UPDATE bit_folders SET position = :position WHERE bit_id = :bit_id AND workspace_id = :workspace_id'
+            );
+            foreach ($folderIds as $fid) {
+                if (!$valid->has((int) $fid)) continue;
+                $stmt->execute([
+                    'position' => $position++,
+                    'bit_id' => (int) $fid,
+                    'workspace_id' => $workspaceId,
+                ]);
+            }
         }
     }
 

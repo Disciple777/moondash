@@ -20,6 +20,13 @@ function titleFromRel(rel: string): string {
 
 export type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'
 
+/** A file opened directly from disk, not linked to any workspace. */
+export interface QuickOpenFile {
+  absPath: string
+  content: string
+  fileName: string
+}
+
 interface AppContextValue {
   ready: boolean
   userEmail: string | null
@@ -101,8 +108,17 @@ interface AppContextValue {
   moveDocToFolder: (docId: number, targetFolderId: number, fromFolderId?: number) => Promise<void>
   unfileDoc: (docId: number) => Promise<void>
   moveFolder: (folderId: number, parentFolderId: number | null) => Promise<void>
+  reorderFolders: (folderIds: number[], parentFolderId?: number | null) => Promise<void>
   refreshTree: () => Promise<void>
   dismissError: () => void
+  /** A file opened directly from disk (not in any workspace). null = none. */
+  quickOpenFile: QuickOpenFile | null
+  /** Save content back to the quick-opened file on disk. */
+  saveQuickFile: (content: string) => Promise<void>
+  /** Close the quick-opened file (back to workspace view). */
+  closeQuickOpen: () => void
+  /** Add the quick-opened file to a multi-space. */
+  addToMultiFromQuick: (multiWsId: number) => Promise<void>
 }
 
 const AppContext = createContext<AppContextValue | null>(null)
@@ -118,6 +134,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [activeDocId, setActiveDocId] = useState<number | null>(null)
   const [activeDocContent, setActiveDocContent] = useState('')
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle')
+  const [quickOpenFile, setQuickOpenFile] = useState<QuickOpenFile | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [multiModal, setMultiModal] = useState<'link' | 'create' | null>(null)
   const [multiModalFolderId, setMultiModalFolderId] = useState<number | null>(null)
@@ -796,6 +813,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [refreshTree, run]
   )
 
+  const reorderFolders = useCallback(
+    async (folderIds: number[], parentFolderId?: number | null) => {
+      if (activeWorkspaceId === null) return
+      await run(async () => {
+        await api.reorderFolders(activeWorkspaceId, folderIds, parentFolderId ?? null)
+        await refreshTree()
+      })
+    },
+    [activeWorkspaceId, refreshTree, run]
+  )
+
   const openFileFromDisk = useCallback(
     async (absPath: string) => {
       const bridge = window.moondash
@@ -807,74 +835,111 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
       try {
         const hit = await bridge.whichBinding(absPath)
+        const base = absPath.split(/[\\/]/).pop() || 'Untitled.md'
 
-        // Decide the target workspace + relative path.
-        let wsId = activeWorkspaceId
-        let rel: string
+        // If the file lives inside a bound workspace folder, open it
+        // through the normal workspace/doc flow.
         if (hit) {
-          wsId = hit.binding.workspaceId
-          rel = hit.relativePath
-        } else {
-          // "Open in place": read the file into the current workspace without
-          // copying anything into a synced folder.
-          if (wsId === null) {
-            const { workspace_id } = await api.createWorkspace('My Workspace')
-            wsId = workspace_id
-            await loadWorkspaces()
+          const wsId = hit.binding.workspaceId
+          const rel = hit.relativePath
+          if (activeWorkspaceId !== wsId) await selectWorkspace(wsId)
+          let tree = await api.tree(wsId)
+          const existing = tree.docs.find((d) => !d.is_deleted && d.relative_path === rel)
+          let bitId: number
+          if (existing) {
+            bitId = existing.id
+          } else {
+            const { bit_id } = await api.createDoc(wsId, rel, content)
+            bitId = bit_id
           }
-          const base = absPath.split(/[\\/]/).pop() || 'Untitled.md'
-          const tree = await api.tree(wsId)
-          const taken = new Set(tree.docs.filter((d) => !d.is_deleted).map((d) => d.relative_path))
-          rel = base
-          if (taken.has(rel)) {
-            const dot = base.lastIndexOf('.')
-            const stem = dot > 0 ? base.slice(0, dot) : base
-            const ext = dot > 0 ? base.slice(dot) : ''
-            let i = 1
-            while (taken.has(`${stem}-${i}${ext}`)) i++
-            rel = `${stem}-${i}${ext}`
+          tree = await api.tree(wsId)
+          const finalDoc = tree.docs.find((d) => d.id === bitId)
+          applyTree(tree)
+          if (!finalDoc) {
+            const node: DocNode = {
+              id: bitId,
+              relative_path: rel,
+              content_hash: '',
+              revision: 1,
+              is_deleted: 0,
+              title: titleFromRel(rel),
+              content_preview: null,
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString()
+            }
+            setDocs((prev) => (prev.some((d) => d.id === bitId) ? prev : [...prev, node]))
           }
+          setActiveDocContent(content)
+          setActiveDocId(bitId)
+          return
         }
 
-        if (activeWorkspaceId !== wsId) await selectWorkspace(wsId)
-
-        // Ensure the doc exists on the server, then open it with the file's text.
-        let tree = await api.tree(wsId)
-        const existing = tree.docs.find((d) => !d.is_deleted && d.relative_path === rel)
-        let bitId: number
-        if (existing) {
-          bitId = existing.id
-        } else {
-          const { bit_id } = await api.createDoc(wsId, rel, content)
-          bitId = bit_id
-          if (!hit) markExternalDoc(bitId)
-        }
-
-        tree = await api.tree(wsId)
-        const finalDoc = tree.docs.find((d) => d.id === bitId)
-        applyTree(tree)
-        if (!finalDoc) {
-          // Server lag safety net — keep the page openable anyway.
-          const node: DocNode = {
-            id: bitId,
-            relative_path: rel,
-            content_hash: '',
-            revision: 1,
-            is_deleted: 0,
-            title: titleFromRel(rel),
-            content_preview: null,
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString()
-          }
-          setDocs((prev) => (prev.some((d) => d.id === bitId) ? prev : [...prev, node]))
-        }
+        // ── Quick-open mode ──
+        // The file is NOT inside any bound workspace.  Open it for
+        // reading/editing directly from disk without creating a server-side
+        // doc.  The user can later add it to a multi-space from the banner.
+        setQuickOpenFile({ absPath, content, fileName: base })
         setActiveDocContent(content)
-        setActiveDocId(bitId)
+        // Clear any active workspace doc so the editor renders the
+        // quick-open view instead of the normal doc view.
+        setActiveDocId(null)
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Could not open the file')
       }
     },
-    [activeWorkspaceId, applyTree, loadWorkspaces, markExternalDoc, selectWorkspace]
+    [activeWorkspaceId, applyTree, selectWorkspace]
+  )
+
+  // ── Quick-open helpers ──────────────────────────────────────────
+  const saveQuickFile = useCallback(
+    async (content: string) => {
+      const qf = quickOpenFile
+      if (!qf) return
+      const bridge = window.moondash
+      if (!bridge) {
+        setError('Cannot save — not running in Electron')
+        return
+      }
+      await bridge.writeExternal(qf.absPath, content)
+      setQuickOpenFile((prev) => (prev ? { ...prev, content } : null))
+    },
+    [quickOpenFile]
+  )
+
+  const closeQuickOpen = useCallback(() => {
+    setQuickOpenFile(null)
+    setActiveDocContent('')
+  }, [])
+
+  const addToMultiFromQuick = useCallback(
+    async (multiWsId: number) => {
+      const qf = quickOpenFile
+      if (!qf) return
+      await run(async () => {
+        const { workspace_id: externalWsId } = await api.externalSync()
+        const base = qf.fileName
+        const dot = base.lastIndexOf('.')
+        const stem = dot > 0 ? base.slice(0, dot) : base
+        const ext = dot > 0 ? base.slice(dot) : ''
+        // Check for name collision in the external workspace
+        const extTree = await api.tree(externalWsId)
+        const taken = new Set(extTree.docs.filter((d) => !d.is_deleted).map((d) => d.relative_path))
+        let name = base
+        let counter = 1
+        while (taken.has(name)) {
+          name = `${stem}-${counter}${ext}`
+          counter++
+        }
+        const { bit_id } = await api.createDoc(externalWsId, name, qf.content, qf.absPath)
+        await api.linkDoc(multiWsId, bit_id)
+        // Switch to the multi-space and open the new doc
+        await selectWorkspace(multiWsId)
+        await refreshTree()
+        await openDoc(bit_id)
+        setQuickOpenFile(null)
+      })
+    },
+    [quickOpenFile, openDoc, refreshTree, run, selectWorkspace]
   )
 
   // "Open with Moondash": a .md/.markdown file was double-clicked in Windows.
@@ -894,6 +959,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (!window.moondash) return
     if (userEmail) {
       if (openFilesQueueRef.current.length > 0) runFiles(openFilesQueueRef.current.splice(0))
+      // Flush any files the main process queued before React was ready.
+      window.moondash.pullOpenFiles().then((files) => {
+        if (files.length > 0) runFiles(files)
+      })
       const off = window.moondash.onOpenFiles(runFiles)
       return () => off()
     }
@@ -950,8 +1019,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     moveDocToFolder,
     unfileDoc,
     moveFolder,
+    reorderFolders,
     refreshTree,
-    dismissError
+    dismissError,
+    quickOpenFile,
+    saveQuickFile,
+    closeQuickOpen,
+    addToMultiFromQuick
   }
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>

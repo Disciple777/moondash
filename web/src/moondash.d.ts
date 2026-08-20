@@ -59,6 +59,7 @@ export interface MoondashBridge {
   readExternalFile(absPath: string): Promise<string | null>
   writeExternal(absPath: string, content: string): Promise<{ ok: boolean }>
   onOpenFiles(cb: (files: string[]) => void): () => void
+  pullOpenFiles(): Promise<string[]>
   fileAssocStatus(): Promise<boolean>
   fileAssocInstall(): Promise<{ ok: boolean }>
   fileAssocUninstall(): Promise<{ ok: boolean }>

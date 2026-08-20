@@ -1073,7 +1073,7 @@ select {
   flex-shrink: 0;
 }
 
-.tree-dir.is-drop {
+.tree-dir.is-drop-inside {
   background: var(--accent-soft);
   outline: 1px solid var(--accent);
 }
@@ -1081,6 +1081,22 @@ select {
 .tree-dir.is-dragging,
 .tree-row.is-dragging {
   opacity: 0.45;
+}
+
+/* Drag indicators — thin coloured lines shown above / below a folder */
+.drag-indicator {
+  height: 2px;
+  margin: 0 8px;
+  border-radius: 1px;
+  background: var(--accent);
+  pointer-events: none;
+  flex-shrink: 0;
+}
+.drag-indicator.drag-above {
+  margin-bottom: -1px;
+}
+.drag-indicator.drag-below {
+  margin-top: -1px;
 }
 
 .tree-multi {
@@ -1762,12 +1778,21 @@ select {
   justify-content: space-between;
   gap: 16px;
   margin-bottom: 28px;
+  min-width: 0;
+}
+
+.home-head > div {
+  min-width: 0;
 }
 
 .home-head h1 {
   margin: 0;
   font-size: 1.7rem;
   letter-spacing: -0.02em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
 }
 
 .home-sub {
@@ -1792,6 +1817,8 @@ select {
   flex-direction: column;
   gap: 8px;
   color: var(--text);
+  min-width: 0;
+  overflow: hidden;
   transition: box-shadow 0.15s ease, transform 0.15s ease, border-color 0.15s ease;
 }
 
@@ -2026,6 +2053,140 @@ select {
   display: flex;
   gap: 8px;
   align-items: center;
+}
+
+/* ── Raw markdown editor ─────────────────────────────────────────── */
+.raw-editor {
+  width: 100%;
+  min-height: 400px;
+  flex: 1;
+  padding: 16px 20px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-family: 'SFMono-Regular', 'Menlo', 'Consolas', 'Liberation Mono', monospace;
+  font-size: 0.82rem;
+  line-height: 1.65;
+  resize: vertical;
+  tab-size: 2;
+  outline: none;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+.raw-editor:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+/* ── Quick-open banner ───────────────────────────────────────────── */
+.quick-open-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px;
+  margin: 0 0 12px;
+  border-radius: 8px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  font-size: 0.78rem;
+  flex-wrap: wrap;
+}
+.quick-open-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+  color: var(--text-2);
+}
+.quick-open-filename {
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+}
+.quick-open-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.55;
+  font-size: 0.72rem;
+  min-width: 0;
+}
+.quick-open-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.quick-open-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 10px;
+  border: none;
+  border-radius: 6px;
+  font-size: 0.74rem;
+  cursor: pointer;
+  background: var(--surface-3);
+  color: var(--text-2);
+  transition: background 0.15s, color 0.15s;
+}
+.quick-open-btn:hover {
+  background: var(--border);
+  color: var(--text);
+}
+.quick-open-btn.save {
+  background: var(--accent);
+  color: #fff;
+}
+.quick-open-btn.save:hover {
+  opacity: 0.85;
+}
+.quick-open-btn.close {
+  background: transparent;
+  color: var(--text-3);
+}
+.quick-open-btn.close:hover {
+  color: #e5484d;
+  background: rgba(229, 72, 77, 0.1);
+}
+.quick-add-wrapper {
+  position: relative;
+}
+.quick-add-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 180px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  padding: 4px;
+  z-index: 100;
+}
+.quick-add-item {
+  display: block;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text);
+  font-size: 0.76rem;
+  text-align: left;
+  cursor: pointer;
+}
+.quick-add-item:hover {
+  background: var(--surface-3);
+}
+.quick-add-empty {
+  padding: 10px 12px;
+  font-size: 0.72rem;
+  color: var(--text-3);
+  text-align: center;
 }
 
 .dot {

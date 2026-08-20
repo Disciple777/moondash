@@ -49,6 +49,7 @@ contextBridge.exposeInMainWorld('moondash', {
     ipcRenderer.on('app:open-files', listener)
     return () => ipcRenderer.removeListener('app:open-files', listener)
   },
+  pullOpenFiles: () => ipcRenderer.invoke('app:pullOpenFiles'),
   fileAssocStatus: () => ipcRenderer.invoke('fileassoc:status'),
   fileAssocInstall: () => ipcRenderer.invoke('fileassoc:install'),
   fileAssocUninstall: () => ipcRenderer.invoke('fileassoc:uninstall'),

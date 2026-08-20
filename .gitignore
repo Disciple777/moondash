@@ -23,3 +23,8 @@ Thumbs.db
 
 # Electron user data (local bindings + sync manifests)
 desktop/userData/
+
+# Ignore build outputs & dist files
+desktop/dist-release/
+*.exe
+*.zip

@@ -105,6 +105,23 @@ final class FolderController
         Response::json(['ok' => true]);
     }
 
+    public function reorderFolders(Request $request): void
+    {
+        $userId = Auth::userId($this->app, $request);
+        /** @var FolderService $service */
+        $service = $this->app->get(FolderService::class);
+
+        $parentFolderId = $request->input('parent_folder_id');
+        $service->reorderFolders(
+            $userId,
+            (int) $request->input('workspace_id'),
+            $parentFolderId !== null && $parentFolderId !== '' ? (int) $parentFolderId : null,
+            (array) $request->input('folder_ids', [])
+        );
+
+        Response::json(['ok' => true]);
+    }
+
     public function reorder(Request $request): void
     {
         $userId = Auth::userId($this->app, $request);

@@ -258,6 +258,12 @@ function sendOpenFiles(files) {
   }
 }
 
+/** Renderer calls this after mounting to flush any files queued before React was ready. */
+ipcMain.handle('app:pullOpenFiles', () => {
+  const files = pendingOpenFiles.splice(0)
+  return files
+})
+
 // --------------------------------------------------------------------- //
 // Window
 // --------------------------------------------------------------------- //
@@ -272,6 +278,7 @@ function createWindow() {
     minHeight: 480,
     title: 'Moondash',
     backgroundColor: '#191919',
+    icon: path.join(__dirname, 'build', 'icon.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -283,24 +290,35 @@ function createWindow() {
 
   mainWindow.setMenuBarVisibility(false)
 
-  mainWindow.webContents.on('did-finish-load', () => {
-    if (pendingOpenFiles.length > 0) {
-      const files = pendingOpenFiles
-      pendingOpenFiles = []
-      sendOpenFiles(files)
-    }
-  })
+  // NOTE: we do NOT drain pendingOpenFiles here. React mounts after
+  // did-finish-load, so the listener isn't registered yet. Instead,
+  // the renderer calls app:pullOpenFiles after mounting to flush the queue.
 
   if (isDev) {
     mainWindow.loadURL(process.env.MOONDASH_DEV_URL || 'http://localhost:5173')
   } else {
-    const indexHtml = path.join(__dirname, '../web/dist/index.html')
-    if (fs.existsSync(indexHtml)) {
-      mainWindow.loadFile(indexHtml)
-    } else {
+    // Packaged: _web-dist is inside the ASAR (copied there by package.mjs).
+    // Dev fallback: ../web/dist is the normal Vite output.
+    const indexHtml =
+      path.join(__dirname, '_web-dist/index.html') ||
+      path.join(__dirname, '../web/dist/index.html')
+    // Try each candidate in order
+    const candidates = [
+      path.join(__dirname, '_web-dist/index.html'),
+      path.join(__dirname, '../web/dist/index.html')
+    ]
+    let loaded = false
+    for (const candidate of candidates) {
+      if (fs.existsSync(candidate)) {
+        mainWindow.loadFile(candidate)
+        loaded = true
+        break
+      }
+    }
+    if (!loaded) {
       mainWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(
         '<body style="font-family:sans-serif;background:#191919;color:#eee;display:grid;place-items:center;height:100vh">' +
-        '<div>Web app not built yet — run <code>npm start</code> from the <code>desktop</code> folder.</div></body>'
+        '<div>Web app not built yet — run <code>npm run build:web</code> then <code>npm run package</code> from the <code>desktop</code> folder.</div></body>'
       ))
     }
   }

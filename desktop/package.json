@@ -1,16 +1,23 @@
 {
   "name": "moondash-desktop",
-  "version": "0.1.0",
+  "version": "1.0.0",
+  "description": "Moondash — Markdown editor with sync, folders, and multi-spaces",
   "private": true,
   "main": "main.js",
+  "author": {
+    "name": "Moondash"
+  },
   "scripts": {
     "start": "node scripts/start.mjs",
     "dev": "electron . --dev",
     "build:web": "npm --prefix ../web run build",
+    "package": "node scripts/package.mjs",
     "test:sync": "node scripts/smoke-sync.mjs",
     "test:linked": "node scripts/smoke-linked.mjs"
   },
   "devDependencies": {
-    "electron": "^31.7.7"
+    "@electron/packager": "^18.3.6",
+    "electron": "^31.7.7",
+    "png-to-ico": "^3.0.2"
   }
 }

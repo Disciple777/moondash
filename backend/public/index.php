@@ -52,6 +52,7 @@ try {
         ['DELETE', '/api/folders', [FolderController::class, 'delete']],
         ['POST', '/api/folders/members', [FolderController::class, 'addMember']],
         ['DELETE', '/api/folders/members', [FolderController::class, 'removeMember']],
+        ['PATCH', '/api/folders/reorder', [FolderController::class, 'reorderFolders']],
         ['PATCH', '/api/folders/members/order', [FolderController::class, 'reorder']],
         ['POST', '/api/folders/move', [FolderController::class, 'move']],
 

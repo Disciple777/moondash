@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS `bit_folders` (
   `workspace_id` bigint(20) UNSIGNED NOT NULL,
   `color_hex` char(7) NOT NULL DEFAULT '#5B5BD6',
   `icon_key` varchar(40) DEFAULT NULL,
+  `position` int(11) NOT NULL DEFAULT 0,
   `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
   PRIMARY KEY (`bit_id`),
   KEY `fk_bit_folders_workspace` (`workspace_id`),

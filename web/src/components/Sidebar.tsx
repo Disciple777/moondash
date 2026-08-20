@@ -1,4 +1,4 @@
-import { useMemo, useState, type DragEvent, type ReactNode } from 'react'
+import { useCallback, useMemo, useRef, useState, type DragEvent, type ReactNode } from 'react'
 import {
   ArrowUpAZ,
   CalendarClock,
@@ -49,6 +49,15 @@ interface FolderNode {
 type DragItem =
   | { type: 'doc'; id: number; fromFolderId?: number }
   | { type: 'folder'; id: number }
+
+/** Where a dragged item will land relative to a target folder. */
+type DropZone = 'above' | 'inside' | 'below'
+
+/** Resolved drag-over target: a folder id + zone, or 'root'. */
+interface DragOverTarget {
+  folderId: number
+  zone: DropZone
+}
 
 interface TreeData {
   folders: FolderNode[]
@@ -136,6 +145,7 @@ export function Sidebar({
     moveDocToFolder,
     unfileDoc,
     moveFolder,
+    reorderFolders,
     createFolder,
     updateFolder,
     deleteFolder,
@@ -156,7 +166,7 @@ export function Sidebar({
     { mode: 'create'; parentId: number | null } | { mode: 'edit'; folder: FolderInfo } | null
   >(null)
   const [dragItem, setDragItem] = useState<DragItem | null>(null)
-  const [dragOver, setDragOver] = useState<'root' | number | null>(null)
+  const [dragOver, setDragOver] = useState<'root' | DragOverTarget | null>(null)
   const [fileDragOver, setFileDragOver] = useState(false)
 
   const tree = useMemo(() => {
@@ -261,6 +271,28 @@ export function Sidebar({
     return false
   }
 
+  /** Get the folder info for computing drop zone parent. */
+  const getFolderParent = useCallback((folderId: number): number | null => {
+    for (const m of memberships) {
+      if (m.item_id === folderId) return m.folder_id
+    }
+    return null
+  }, [memberships])
+
+  /** Get the ordered sibling folder IDs for the same parent. */
+  const getSiblingFolderIds = useCallback((parentId: number | null): number[] => {
+    if (parentId !== null) {
+      // Folders nested under parentId, ordered by position
+      return memberships
+        .filter((m) => m.folder_id === parentId && folders.some((f) => f.bit_id === m.item_id))
+        .sort((a, b) => a.position - b.position)
+        .map((m) => m.item_id)
+    }
+    // Root-level folders — return in order of `folders` array (backend sorts by position)
+    const nested = new Set(memberships.filter((m) => folders.some((f) => f.bit_id === m.item_id)).map((m) => m.item_id))
+    return folders.filter((f) => !nested.has(f.bit_id)).map((f) => f.bit_id)
+  }, [memberships, folders])
+
   const startDrag = (item: DragItem) => (e: DragEvent) => {
     e.dataTransfer.setData('text/plain', JSON.stringify(item))
     e.dataTransfer.effectAllowed = 'move'
@@ -268,18 +300,36 @@ export function Sidebar({
     setDragOver(null)
   }
 
-  const onDragOver = (target: 'root' | number) => (e: DragEvent) => {
+  /** Compute the drop zone from the mouse Y position within the element. */
+  const onDragOverFolder = (folderId: number) => (e: DragEvent) => {
     if (!dragItem) return
+    // Don't allow dropping a folder onto itself or its descendants
+    if (dragItem.type === 'folder' && (dragItem.id === folderId || isFolderDescendant(dragItem.id, folderId))) {
+      return
+    }
     e.preventDefault()
+    e.stopPropagation()
     e.dataTransfer.dropEffect = 'move'
-    setDragOver((prev) => (prev === target ? prev : target))
+
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+    const y = e.clientY - rect.top
+    const h = rect.height
+    let zone: DropZone
+    if (y < h * 0.3) zone = 'above'
+    else if (y > h * 0.7) zone = 'below'
+    else zone = 'inside'
+
+    setDragOver((prev) => {
+      if (prev && typeof prev === 'object' && prev.folderId === folderId && prev.zone === zone) return prev
+      return { folderId, zone }
+    })
   }
 
   const onDragLeave = () => {
     if (dragItem) setDragOver(null)
   }
 
-  const onDrop = (target: 'root' | number) => (e: DragEvent) => {
+  const onDropRoot = (e: DragEvent) => {
     e.preventDefault()
     const item = dragItem
     setDragItem(null)
@@ -287,13 +337,62 @@ export function Sidebar({
     if (!item) return
 
     if (item.type === 'doc') {
-      if (target === 'root') void unfileDoc(item.id)
-      else void moveDocToFolder(item.id, target, item.fromFolderId)
+      void unfileDoc(item.id)
     } else {
-      if (target === 'root') {
-        void moveFolder(item.id, null)
-      } else if (target !== item.id && !isFolderDescendant(item.id, target)) {
-        void moveFolder(item.id, target)
+      void moveFolder(item.id, null)
+    }
+  }
+
+  const onDropFolder = (target: number) => (e: DragEvent) => {
+    e.preventDefault()
+    const item = dragItem
+    const zone = typeof dragOver === 'object' ? dragOver?.zone ?? 'inside' : 'inside'
+    setDragItem(null)
+    setDragOver(null)
+    if (!item) return
+
+    if (item.type === 'doc') {
+      if (zone === 'inside') {
+        void moveDocToFolder(item.id, target, item.fromFolderId)
+      }
+      // For 'above'/'below', docs don't have position tracking — move into the target folder
+      else void moveDocToFolder(item.id, target, item.fromFolderId)
+      return
+    }
+
+    // Folder drag
+    if (target === item.id) return
+    if (isFolderDescendant(item.id, target)) return
+
+    if (zone === 'inside') {
+      // Nest inside the target
+      void moveFolder(item.id, target)
+    } else {
+      // Reorder: place above or below the target among siblings
+      const parentOfTarget = getFolderParent(target)
+      const siblings = getSiblingFolderIds(parentOfTarget)
+      const targetIdx = siblings.indexOf(target)
+      if (targetIdx === -1) return
+
+      // Remove dragged item from siblings (it may be elsewhere)
+      const without = siblings.filter((id) => id !== item.id)
+      const insertIdx = zone === 'above' ? targetIdx : targetIdx + 1
+      without.splice(insertIdx, 0, item.id)
+
+      // If moving within the same parent, just reorder
+      const parentOfDragged = getFolderParent(item.id)
+      if (parentOfDragged === parentOfTarget) {
+        void reorderFolders(without, parentOfTarget)
+      } else {
+        // Move to the same parent first, then reorder
+        void (async () => {
+          await moveFolder(item.id, parentOfTarget)
+          // After move, re-fetch siblings and reorder
+          const newSiblings = getSiblingFolderIds(parentOfTarget)
+          const without2 = newSiblings.filter((id) => id !== item.id)
+          without2.splice(insertIdx, 0, item.id)
+          await reorderFolders(without2, parentOfTarget)
+        })()
       }
     }
   }
@@ -437,18 +536,22 @@ export function Sidebar({
     const { info, children } = node
     const open = isFiltering || expanded.has(info.bit_id)
     const dragging = dragItem?.type === 'folder' && dragItem.id === info.bit_id
-    const isDrop = dragOver === info.bit_id
+    const dropTarget = dragOver && typeof dragOver === 'object' && dragOver.folderId === info.bit_id ? dragOver : null
+    const isDropInside = dropTarget?.zone === 'inside'
+    const isDropAbove = dropTarget?.zone === 'above'
+    const isDropBelow = dropTarget?.zone === 'below'
 
     return (
       <div key={info.bit_id}>
+        {isDropAbove && <div className="drag-indicator drag-above" />}
         <div
-          className={`tree-row tree-dir${isDrop ? ' is-drop' : ''}${dragging ? ' is-dragging' : ''}`}
+          className={`tree-row tree-dir${isDropInside ? ' is-drop-inside' : ''}${dragging ? ' is-dragging' : ''}`}
           style={{ paddingLeft: 8 + depth * 14 }}
           draggable
           onDragStart={startDrag({ type: 'folder', id: info.bit_id })}
-          onDragOver={onDragOver(info.bit_id)}
+          onDragOver={onDragOverFolder(info.bit_id)}
           onDragLeave={onDragLeave}
-          onDrop={onDrop(info.bit_id)}
+          onDrop={onDropFolder(info.bit_id)}
           onClick={() => {
             onNavigate?.()
             toggleFolder(info.bit_id)
@@ -515,6 +618,7 @@ export function Sidebar({
             {node.docs.map((d) => renderDoc(d, depth + 1, info.bit_id))}
           </>
         )}
+        {isDropBelow && <div className="drag-indicator drag-below" />}
       </div>
     )
   }
@@ -722,9 +826,14 @@ export function Sidebar({
               <div className="tree-section">
                 <div
                   className={`tree-section-head${dragOver === 'root' ? ' is-drop' : ''}`}
-                  onDragOver={onDragOver('root')}
+                  onDragOver={(e) => {
+                    if (!dragItem) return
+                    e.preventDefault()
+                    e.dataTransfer.dropEffect = 'move'
+                    setDragOver('root')
+                  }}
                   onDragLeave={onDragLeave}
-                  onDrop={onDrop('root')}
+                  onDrop={onDropRoot}
                 >
                   <span className="tree-section-label">
                     {isMultiSpace ? 'Documents' : 'Unfiled'}

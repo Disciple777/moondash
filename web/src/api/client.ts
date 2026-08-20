@@ -223,6 +223,12 @@ export const api = {
     request<{ ok: boolean }>('POST', '/api/folders/move', { folder_id, parent_folder_id }),
   reorderFolderMembers: (folder_id: number, item_ids: number[]) =>
     request<{ ok: boolean }>('PATCH', '/api/folders/members/order', { folder_id, item_ids }),
+  reorderFolders: (workspace_id: number, folder_ids: number[], parent_folder_id?: number | null) =>
+    request<{ ok: boolean }>('PATCH', '/api/folders/reorder', {
+      workspace_id,
+      folder_ids,
+      parent_folder_id: parent_folder_id ?? null
+    }),
 
   manifest: (workspace_id: number) =>
     request<{ entries: SyncEntry[] }>('GET', `/api/sync/manifest?workspace_id=${workspace_id}`),

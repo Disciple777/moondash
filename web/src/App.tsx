@@ -4,6 +4,7 @@ import { useApp } from './state/AppContext'
 import { Login } from './components/Login'
 import { Sidebar } from './components/Sidebar'
 import { Editor } from './components/Editor'
+import { QuickOpenEditor } from './components/QuickOpenEditor'
 import { WorkspaceHome } from './components/WorkspaceHome'
 import { MultiSpaceModal } from './components/MultiSpaceModal'
 
@@ -19,7 +20,7 @@ function Splash() {
 }
 
 export default function App() {
-  const { ready, userEmail, activeDoc, error, dismissError } = useApp()
+  const { ready, userEmail, activeDoc, quickOpenFile, error, dismissError } = useApp()
   // Mobile: the sidebar lives in an off-canvas drawer, opened by the menu
   // button and closed by the backdrop or by navigating.
   const [navOpen, setNavOpen] = useState(false)
@@ -45,7 +46,13 @@ export default function App() {
       />
       <Sidebar mobileOpen={navOpen} onNavigate={() => setNavOpen(false)} />
       <main className="main">
-        {activeDoc ? <Editor key={activeDoc.id} doc={activeDoc} /> : <WorkspaceHome />}
+        {quickOpenFile ? (
+          <QuickOpenEditor />
+        ) : activeDoc ? (
+          <Editor key={activeDoc.id} doc={activeDoc} />
+        ) : (
+          <WorkspaceHome />
+        )}
       </main>
       <MultiSpaceModal />
       {error && (
