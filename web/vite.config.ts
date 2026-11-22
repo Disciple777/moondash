@@ -29,6 +29,14 @@ export default defineConfig({
           { src: 'icons/icon-512.png', sizes: '512x512', type: 'image/png' },
           { src: 'icons/maskable-icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' }
         ]
+      },
+      workbox: {
+        // Let the static download page (public/download/) and the installer zip
+        // next to it load for real instead of the app shell. Workbox tests this
+        // against the FULL pathname (e.g. /moondash/download/), so it must not
+        // be anchored to ^download. scripts/check-download.mjs verifies this
+        // after every build.
+        navigateFallbackDenylist: [/\/download(\/|$)/]
       }
     })
   ],

@@ -34,18 +34,31 @@ import {
   Redo2,
   SquareCode,
   Strikethrough,
+  Tag,
+  Underline as UnderlineIcon,
   Undo2,
+  Lock,
+  LockOpen,
   X
 } from 'lucide-react'
+import { Table } from '@tiptap/extension-table'
+import { TableRow } from '@tiptap/extension-table-row'
+import { TableCell } from '@tiptap/extension-table-cell'
+import { TableHeader } from '@tiptap/extension-table-header'
 import { SlashMenu } from './SlashMenu'
 import { FolderPicker } from './FolderPicker'
 import { TextColor } from '../extensions/TextColor'
+import { Underline } from '../extensions/Underline'
 import { BlockDrag } from '../extensions/BlockDrag'
 import { DateShortcut } from '../extensions/DateShortcut'
 import { Toggle } from '../extensions/Toggle'
 import { TaskBackspace } from '../extensions/TaskBackspace'
-import { emptyTaskListPlugin } from '../extensions/EmptyTaskList'
+import { MarkdownFidelity } from '../extensions/MarkdownFidelity'
 import { useApp } from '../state/AppContext'
+import { ProtectDialog } from './NoteLock'
+import { PlainTextArea, isPlainTextPath, lineEndingOf, withLineEnding } from './PlainTextArea'
+import { FindBar, textMatches } from './FindBar'
+import { FindHighlight, findState } from '../extensions/FindHighlight'
 import type { DocNode } from '../types'
 
 const TEXT_COLORS: { name: string; value: string }[] = [
@@ -88,17 +101,43 @@ function ToolbarButton({
 }
 
 export function Editor({ doc }: { doc: DocNode }) {
-  const { activeDocContent, saveDoc, saveStatus, renameDoc, folders, memberships, removeDocFromFolder, closeDoc } = useApp()
-  const [rawView, setRawView] = useState(false)
-  const [rawText, setRawText] = useState('')
+  const { activeDocContent, activeDocProtected, saveDoc, saveStatus, renameDoc, setDocAlias, folders, memberships, removeDocFromFolder, closeDoc } = useApp()
+  // .txt files are edited as plain text and saved byte-for-byte; running them
+  // through the markdown pipeline would add escapes (`array[0]` → `array\[0\]`).
+  const plainText = isPlainTextPath(doc.relative_path)
+  const [rawView, setRawView] = useState(plainText)
+  const [rawText, setRawText] = useState(plainText ? activeDocContent : '')
   const rawTimerRef = useRef<number | null>(null)
   const lastSavedRef = useRef<string>('')
   const timerRef = useRef<number | null>(null)
+  // The latest edit not yet written, so leaving the note mid-debounce (clicking
+  // another page, going home) still saves it instead of dropping it.
+  const pendingRef = useRef<string | null>(null)
+  // The file's own line-ending style, re-applied to everything saved.
+  const eolRef = useRef(lineEndingOf(activeDocContent))
+  const persist = (text: string) => withLineEnding(text, eolRef.current)
   const [title, setTitle] = useState(doc.title)
   const [renaming, setRenaming] = useState(false)
+  // The doc's "second name" (934): a label the app shows for it, stored in the
+  // cloud so it follows the doc across devices. Editing it never touches the
+  // file, so the heading above keeps showing the real file name.
+  const [aliasing, setAliasing] = useState(false)
+  const [aliasDraft, setAliasDraft] = useState('')
+  // The name the user just committed, shown until the tree catches up. A rename
+  // is two round-trips (save, then refresh) and the doc can come back with the
+  // server's "Untitled" fallback in between, which used to flash on screen.
+  const [pendingTitle, setPendingTitle] = useState<string | null>(null)
+  // Find-in-page (Ctrl+F). The query lives here; the matches live in the
+  // editor's own plugin state (rich view) or are recomputed from the text
+  // (raw / plain view), so a search is never part of the saved document.
+  const [findOpen, setFindOpen] = useState(false)
+  const [findQuery, setFindQuery] = useState('')
+  const [rawFindIndex, setRawFindIndex] = useState(0)
+  const rawRef = useRef<HTMLTextAreaElement | null>(null)
   const [stats, setStats] = useState({ words: 0, chars: 0 })
   const [pickerPos, setPickerPos] = useState<{ x: number; y: number } | null>(null)
   const [showFolderChips, setShowFolderChips] = useState(false)
+  const [showProtect, setShowProtect] = useState(false)
   const [colorPos, setColorPos] = useState<{ x: number; y: number } | null>(null)
   const addChipRef = useRef<HTMLButtonElement | null>(null)
 
@@ -128,13 +167,21 @@ export function Editor({ doc }: { doc: DocNode }) {
       }),
       TaskList,
       TaskItem.configure({ nested: true }),
+      Table.configure({ resizable: false }),
+      TableRow,
+      TableCell,
+      TableHeader,
       Link.configure({ openOnClick: false, autolink: true }),
       // html: true lets custom marks (text color) round-trip through the
       // markdown as <span style="color:…">. Plain markdown is unchanged.
-      Markdown.configure({ html: true, transformPastedText: true, transformCopiedText: true }),
+      // breaks: a newline inside a paragraph is a real line break (see MarkdownFidelity).
+      Markdown.configure({ html: true, breaks: true, transformPastedText: true, transformCopiedText: true }),
+      MarkdownFidelity,
       CharacterCount,
       SlashMenu,
       TextColor,
+      Underline,
+      FindHighlight,
       BlockDrag,
       DateShortcut
     ],
@@ -142,46 +189,42 @@ export function Editor({ doc }: { doc: DocNode }) {
     editorProps: {
       attributes: { class: 'md-editor', spellcheck: 'false' }
     },
+    // Word/character counts for the footer from the start, not only after the first edit.
+    onCreate: ({ editor }) =>
+      setStats({ words: editor.storage.characterCount.words(), chars: editor.storage.characterCount.characters() }),
     onUpdate: ({ editor }) => {
-      const md = (editor.storage.markdown.getMarkdown() as string) ?? ''
+      const md = persist((editor.storage.markdown.getMarkdown() as string) ?? '')
       setStats({
         words: editor.storage.characterCount.words(),
         chars: editor.storage.characterCount.characters()
       })
       if (md === lastSavedRef.current) return
+      pendingRef.current = md
       if (timerRef.current !== null) window.clearTimeout(timerRef.current)
       timerRef.current = window.setTimeout(() => {
         void saveDoc(doc.id, md).then(() => {
           lastSavedRef.current = md
+          if (pendingRef.current === md) pendingRef.current = null
         })
       }, 900)
     }
   })
 
-  // Make bare `- [ ]` lines (empty task items) round-trip as real task items.
-  // Registered once on the shared markdown-it instance; the doc.id effect below
-  // (which re-parses the active content) then always parses through it.
-  useEffect(() => {
-    if (!editor) return
-    const parser = (editor.storage.markdown as {
-      parser?: { md?: { use: (p: unknown) => void; __emptyTaskListPatched?: boolean } }
-    })?.parser
-    const md = parser?.md
-    if (md && !md.__emptyTaskListPatched) {
-      md.__emptyTaskListPatched = true
-      md.use(emptyTaskListPlugin)
-    }
-  }, [editor])
-
   // Reset local state when switching docs (component is keyed by doc.id).
   useEffect(() => {
     setTitle(doc.title)
     setRenaming(false)
+    setPendingTitle(null)
+    setFindOpen(false)
+    setFindQuery('')
     lastSavedRef.current = activeDocContent
+    eolRef.current = lineEndingOf(activeDocContent)
+    pendingRef.current = null
     if (timerRef.current !== null) {
       window.clearTimeout(timerRef.current)
       timerRef.current = null
     }
+    if (plainText) setRawText(activeDocContent)
     if (editor) {
       editor.commands.setContent(activeDocContent || '')
     }
@@ -191,7 +234,48 @@ export function Editor({ doc }: { doc: DocNode }) {
   useEffect(() => {
     return () => {
       if (timerRef.current !== null) window.clearTimeout(timerRef.current)
+      if (rawTimerRef.current !== null) window.clearTimeout(rawTimerRef.current)
+      // Flush instead of dropping: the debounce may not have fired yet.
+      const pending = pendingRef.current
+      if (pending !== null && pending !== lastSavedRef.current) void saveDoc(doc.id, pending)
     }
+    // Mount-time closure on purpose: saveDoc must target this doc's workspace
+    // even if the unmount was caused by switching to another one.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Drop the optimistic title as soon as the tree reports it. The timeout is a
+  // safety net: if the rename silently failed, stop lying about the name.
+  useEffect(() => {
+    if (pendingTitle === null) return
+    if (doc.title === pendingTitle) {
+      setPendingTitle(null)
+      setTitle(pendingTitle)
+      return
+    }
+    const t = window.setTimeout(() => setPendingTitle(null), 8000)
+    return () => window.clearTimeout(t)
+  }, [doc.title, pendingTitle])
+
+  /** What the heading shows — the committed name wins while it is in flight. */
+  const shownTitle = pendingTitle ?? doc.title
+
+  const commitAlias = () => {
+    setAliasing(false)
+    if (aliasDraft.trim() === (doc.alias ?? '')) return
+    void setDocAlias(doc.id, aliasDraft)
+  }
+
+  // Ctrl/Cmd+F opens the find bar instead of the browser's own, which cannot
+  // see past the virtualised rich editor anyway.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'f' || e.altKey) return
+      e.preventDefault()
+      setFindOpen(true)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
   }, [])
 
   const docFolderIds = useMemo(
@@ -212,7 +296,10 @@ export function Editor({ doc }: { doc: DocNode }) {
     setRenaming(false)
     const clean = title.replace(/[/\\]+/g, '-').trim()
     if (clean && clean !== doc.title) {
-      void renameDoc(doc.id, clean)
+      // Keep showing what was typed until the refreshed tree agrees, so the
+      // title never blinks through the server's "Untitled" fallback.
+      setPendingTitle(clean)
+      void renameDoc(doc.id, clean).catch(() => setPendingTitle(null))
     } else {
       setTitle(doc.title)
     }
@@ -250,17 +337,78 @@ export function Editor({ doc }: { doc: DocNode }) {
     setColorPos({ x: rect.left, y: rect.bottom + 6 })
   }
 
+  // ---- find in page ----------------------------------------------------
+  const rawMatches = useMemo(
+    () => (rawView ? textMatches(rawText, findQuery) : []),
+    [rawView, rawText, findQuery]
+  )
+  const richFind = editor ? findState(editor.state) : null
+  const findCount = rawView ? rawMatches.length : (richFind?.matches.length ?? 0)
+  const findIndex = rawView
+    ? rawMatches.length === 0
+      ? -1
+      : Math.min(rawFindIndex, rawMatches.length - 1)
+    : (richFind?.index ?? -1)
+
+  // Push the query into the rich editor, which highlights the matches itself.
+  useEffect(() => {
+    if (!editor || rawView) return
+    editor.commands.setFindQuery(findOpen ? findQuery : '')
+  }, [editor, rawView, findOpen, findQuery])
+
+  /** Bring match `i` into view: select it in the textarea, scroll to it in the rich editor. */
+  const revealMatch = (i: number) => {
+    if (rawView) {
+      const hit = rawMatches[i]
+      const el = rawRef.current
+      if (!hit || !el) return
+      el.focus()
+      el.setSelectionRange(hit[0], hit[1])
+      // The textarea grows with its content, so the page scrolls, not the box.
+      const before = rawText.slice(0, hit[0]).split('\n').length - 1
+      const lineHeight = parseFloat(getComputedStyle(el).lineHeight) || 24
+      const scroller = el.closest('.main') as HTMLElement | null
+      scroller?.scrollTo({ top: Math.max(0, el.offsetTop + before * lineHeight - 160), behavior: 'smooth' })
+      return
+    }
+    if (!editor) return
+    const hit = findState(editor.state).matches[i]
+    if (!hit) return
+    const dom = editor.view.domAtPos(hit.from).node
+    const el = dom instanceof HTMLElement ? dom : dom.parentElement
+    el?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  }
+
+  const stepFind = (delta: 1 | -1) => {
+    if (findCount === 0) return
+    const next = ((findIndex + delta) % findCount + findCount) % findCount
+    if (rawView) setRawFindIndex(next)
+    else editor?.commands.setFindIndex(next)
+    // The decoration/selection has to exist before it can be scrolled to.
+    window.setTimeout(() => revealMatch(next), 0)
+  }
+
+  const closeFind = () => {
+    setFindOpen(false)
+    setFindQuery('')
+    if (!rawView) editor?.commands.setFindQuery('')
+  }
+
   const toggleRawView = () => {
     if (rawView) {
-      // Exiting raw view: push the edited markdown back into TipTap
-      if (editor && rawText !== lastSavedRef.current) {
+      // Exiting raw view: always push the edited markdown back into TipTap
+      // and save, regardless of whether the auto-save timer already ran.
+      if (editor) {
         editor.commands.setContent(rawText)
+        const text = persist(rawText)
+        pendingRef.current = text
         if (rawTimerRef.current !== null) window.clearTimeout(rawTimerRef.current)
         rawTimerRef.current = window.setTimeout(() => {
-          void saveDoc(doc.id, rawText).then(() => {
-            lastSavedRef.current = rawText
+          void saveDoc(doc.id, text).then(() => {
+            lastSavedRef.current = text
+            if (pendingRef.current === text) pendingRef.current = null
           })
-        }, 600)
+        }, 300)
       }
       setRawView(false)
     } else {
@@ -274,10 +422,13 @@ export function Editor({ doc }: { doc: DocNode }) {
   // Auto-save while typing in raw view
   const handleRawChange = (value: string) => {
     setRawText(value)
+    const text = persist(value)
+    pendingRef.current = text
     if (rawTimerRef.current !== null) window.clearTimeout(rawTimerRef.current)
     rawTimerRef.current = window.setTimeout(() => {
-      void saveDoc(doc.id, value).then(() => {
-        lastSavedRef.current = value
+      void saveDoc(doc.id, text).then(() => {
+        lastSavedRef.current = text
+        if (pendingRef.current === text) pendingRef.current = null
       })
     }, 900)
   }
@@ -290,6 +441,10 @@ export function Editor({ doc }: { doc: DocNode }) {
             <Home size={16} />
           </ToolbarButton>
           <span className="tb-sep" />
+          {rawView ? (
+            <span className="tb-mode">{plainText ? 'Plain text' : 'Raw markdown'}</span>
+          ) : (
+          <>
           <ToolbarButton title="Undo" onClick={() => editor.chain().focus().undo().run()} disabled={!editor.can().undo()}>
             <Undo2 size={16} />
           </ToolbarButton>
@@ -312,6 +467,9 @@ export function Editor({ doc }: { doc: DocNode }) {
           </ToolbarButton>
           <ToolbarButton title="Italic" active={editor.isActive('italic')} onClick={() => editor.chain().focus().toggleItalic().run()}>
             <Italic size={16} />
+          </ToolbarButton>
+          <ToolbarButton title="Underline (Ctrl+U)" active={editor.isActive('underline')} onClick={() => editor.chain().focus().toggleUnderline().run()}>
+            <UnderlineIcon size={16} />
           </ToolbarButton>
           <ToolbarButton title="Strikethrough" active={editor.isActive('strike')} onClick={() => editor.chain().focus().toggleStrike().run()}>
             <Strikethrough size={16} />
@@ -345,8 +503,17 @@ export function Editor({ doc }: { doc: DocNode }) {
             <Palette size={16} />
             {activeColor && <span className="tb-color-dot" style={{ background: activeColor }} />}
           </ToolbarButton>
+          </>
+          )}
         </div>
         <div className="doc-toolbar-right">
+          <ToolbarButton
+            title={activeDocProtected ? 'Password-protected — click to remove' : 'Protect with a password'}
+            active={activeDocProtected}
+            onClick={() => setShowProtect(true)}
+          >
+            {activeDocProtected ? <Lock size={15} /> : <LockOpen size={15} />}
+          </ToolbarButton>
           <ToolbarButton
             title="Folder options"
             active={showFolderChips}
@@ -354,13 +521,15 @@ export function Editor({ doc }: { doc: DocNode }) {
           >
             {showFolderChips ? <FolderOpen size={15} /> : <FolderIcon size={15} />}
           </ToolbarButton>
-          <ToolbarButton
-            title={rawView ? 'Rich view' : 'Raw markdown view'}
-            active={rawView}
-            onClick={toggleRawView}
-          >
-            <SquareCode size={15} />
-          </ToolbarButton>
+          {!plainText && (
+            <ToolbarButton
+              title={rawView ? 'Rich view' : 'Raw markdown view'}
+              active={rawView}
+              onClick={toggleRawView}
+            >
+              <SquareCode size={15} />
+            </ToolbarButton>
+          )}
           <span className="tb-sep" />
           <span className={`save-status save-${saveStatus}`}>
             {saveStatus === 'saving' && (
@@ -409,6 +578,12 @@ export function Editor({ doc }: { doc: DocNode }) {
           </div>
         )}
         <FolderPicker docId={doc.id} position={pickerPos} onClose={() => setPickerPos(null)} />
+        {showProtect && (
+          <ProtectDialog
+            markdown={persist(rawView ? rawText : ((editor?.storage.markdown.getMarkdown() as string) ?? ''))}
+            onClose={() => setShowProtect(false)}
+          />
+        )}
         {colorPos && (
           <>
             <div className="color-backdrop" onClick={() => setColorPos(null)} />
@@ -461,7 +636,7 @@ export function Editor({ doc }: { doc: DocNode }) {
                 onDoubleClick={() => setRenaming(true)}
                 title="Double-click or click the pencil to rename"
               >
-                {doc.title}
+                {shownTitle}
               </h1>
               <button
                 className="icon-btn doc-title-edit"
@@ -474,13 +649,59 @@ export function Editor({ doc }: { doc: DocNode }) {
           )}
         </div>
 
+        <div className="doc-alias-row">
+          {aliasing ? (
+            <input
+              className="doc-alias-input"
+              autoFocus
+              placeholder="Second name (leave empty to clear)"
+              aria-label="Second name"
+              value={aliasDraft}
+              onChange={(e) => setAliasDraft(e.target.value)}
+              onBlur={commitAlias}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') commitAlias()
+                if (e.key === 'Escape') setAliasing(false)
+              }}
+            />
+          ) : (
+            <button
+              className={`doc-alias${doc.alias ? ' is-set' : ''}`}
+              title="A second name for this page. The file keeps its own name."
+              onClick={() => {
+                setAliasDraft(doc.alias ?? '')
+                setAliasing(true)
+              }}
+            >
+              <Tag size={12} />
+              {doc.alias ? doc.alias : 'Add a second name'}
+            </button>
+          )}
+        </div>
+
+        {findOpen && (
+          <FindBar
+            query={findQuery}
+            onQuery={(q) => {
+              setFindQuery(q)
+              setRawFindIndex(0)
+            }}
+            count={findCount}
+            current={findIndex}
+            onNext={() => stepFind(1)}
+            onPrev={() => stepFind(-1)}
+            onClose={closeFind}
+          />
+        )}
+
         {rawView ? (
-          <textarea
-            className="raw-editor"
+          <PlainTextArea
+            innerRef={rawRef}
+            className={plainText ? 'plain-editor' : 'raw-editor'}
             value={rawText}
-            onChange={(e) => handleRawChange(e.target.value)}
-            spellCheck={false}
-            autoFocus
+            onChange={handleRawChange}
+            tabText={plainText ? '\t' : '  '}
+            placeholder={plainText ? 'Start writing…' : undefined}
           />
         ) : (
           <EditorContent editor={editor} />
@@ -489,7 +710,9 @@ export function Editor({ doc }: { doc: DocNode }) {
         <div className="doc-footer">
           {rawView ? (
             <>
-              <span>Raw markdown view</span>
+              <span>{plainText ? 'Plain text file' : 'Raw markdown view'}</span>
+              <span className="dot">·</span>
+              <span>{rawText === '' ? 0 : rawText.split('\n').length} lines</span>
               <span className="dot">·</span>
               <span>{rawText.length} characters</span>
             </>

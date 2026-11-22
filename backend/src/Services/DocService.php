@@ -15,8 +15,66 @@ use PDO;
  */
 final class DocService
 {
+    /** Memoised: whether this database has had the doc_files.alias migration. */
+    private ?bool $hasAlias = null;
+
     public function __construct(private PDO $pdo, private WorkspaceService $workspaces)
     {
+    }
+
+    /**
+     * The alias column was added by migration-alias.sql. A deployment whose
+     * database has not had that migration applied yet would fail every tree
+     * query if we selected a column that isn't there, so the column is probed
+     * once and substituted with NULL when it is missing.
+     */
+    private function hasAliasColumn(): bool
+    {
+        if ($this->hasAlias === null) {
+            try {
+                $stmt = $this->pdo->query("SHOW COLUMNS FROM doc_files LIKE 'alias'");
+                $this->hasAlias = $stmt !== false && $stmt->fetch() !== false;
+            } catch (\Throwable) {
+                $this->hasAlias = false;
+            }
+        }
+
+        return $this->hasAlias;
+    }
+
+    /** `df.alias` where the column exists, a NULL stand-in where it doesn't. */
+    private function aliasSelect(): string
+    {
+        return $this->hasAliasColumn() ? 'df.alias' : 'NULL AS alias';
+    }
+
+    /**
+     * The document's "second name": what the app shows instead of the file's
+     * own title, without renaming the file on disk. An empty alias clears it.
+     */
+    public function setAlias(int $userId, int $bitId, ?string $alias): array
+    {
+        $detail = $this->detail($bitId);
+        $workspaceId = (int) ($detail['workspace_id'] ?? 0);
+        if ($detail === null || $workspaceId === 0 || !$this->workspaces->belongsToUser($userId, $workspaceId)) {
+            throw new DomainException('Doc not found');
+        }
+        if (!$this->hasAliasColumn()) {
+            throw new DomainException('This server has not had the alias migration applied yet');
+        }
+
+        $clean = $alias === null ? null : trim($alias);
+        if ($clean === '') {
+            $clean = null;
+        }
+        if ($clean !== null && mb_strlen($clean) > 200) {
+            $clean = mb_substr($clean, 0, 200);
+        }
+
+        $stmt = $this->pdo->prepare('UPDATE doc_files SET alias = :alias WHERE bit_id = :bit_id');
+        $stmt->execute(['alias' => $clean, 'bit_id' => $bitId]);
+
+        return ['ok' => true, 'alias' => $clean];
     }
 
     public function tree(int $userId, int $workspaceId): array
@@ -38,6 +96,7 @@ final class DocService
                 df.bit_id AS id,
                 df.relative_path,
                 df.local_path,
+                ' . $this->aliasSelect() . ',
                 df.content_hash,
                 df.revision,
                 df.is_deleted,
@@ -61,6 +120,7 @@ final class DocService
                 df.bit_id AS id,
                 df.relative_path,
                 df.local_path,
+                ' . $this->aliasSelect() . ',
                 df.content_hash,
                 df.revision,
                 df.is_deleted,
@@ -113,6 +173,7 @@ final class DocService
                 df.workspace_id,
                 df.relative_path,
                 df.local_path,
+                ' . $this->aliasSelect() . ',
                 df.revision,
                 df.is_deleted
              FROM bits b
@@ -125,6 +186,104 @@ final class DocService
         $row = $stmt->fetch();
 
         return $row ?: null;
+    }
+
+    /**
+     * Full-text-ish search across a workspace's docs: title and body.
+     *
+     * LIKE rather than a FULLTEXT index so it works on the existing schema
+     * with no migration, and matches part-words the way an editor's find does.
+     * Each hit carries a short snippet around the first body match so the
+     * results list can show context instead of just a file name.
+     */
+    public function search(int $userId, int $workspaceId, string $query, int $limit = 60): array
+    {
+        if (!$this->workspaces->belongsToUser($userId, $workspaceId)) {
+            return [];
+        }
+        $q = trim($query);
+        if ($q === '') {
+            return [];
+        }
+        // Escape the LIKE wildcards so a query of "100%" is a literal search.
+        $like = '%' . str_replace(['\\', '%', '_'], ['\\\\', '\\%', '\\_'], $q) . '%';
+        $limit = max(1, min(200, $limit));
+
+        $multi = $this->workspaces->workspaceType($workspaceId) === 'multi';
+        $from = $multi
+            ? 'FROM workspace_doc_links wdl
+               INNER JOIN bits b ON b.id = wdl.bit_id
+               INNER JOIN doc_files df ON df.bit_id = b.id
+               LEFT JOIN bit_notes n ON n.bit_id = b.id
+               WHERE wdl.workspace_id = :workspace_id'
+            : 'FROM doc_files df
+               INNER JOIN bits b ON b.id = df.bit_id
+               LEFT JOIN bit_notes n ON n.bit_id = b.id
+               WHERE df.workspace_id = :workspace_id';
+
+        $stmt = $this->pdo->prepare(
+            'SELECT
+                df.bit_id AS id,
+                df.relative_path,
+                df.workspace_id,
+                b.title,
+                b.updated_at,
+                n.body AS content
+             ' . $from . "
+               AND df.is_deleted = 0
+               AND (b.title LIKE :like_title OR n.body LIKE :like_body)
+             ORDER BY b.updated_at DESC
+             LIMIT " . $limit
+        );
+        // Two placeholders for the same value: a named one may only appear once
+        // per statement when the driver prepares natively.
+        $stmt->execute([
+            'workspace_id' => $workspaceId,
+            'like_title' => $like,
+            'like_body' => $like,
+        ]);
+
+        $needle = mb_strtolower($q);
+        $out = [];
+        foreach ($stmt->fetchAll() as $row) {
+            $body = (string) ($row['content'] ?? '');
+            $out[] = [
+                'id' => (int) $row['id'],
+                'relative_path' => (string) $row['relative_path'],
+                'workspace_id' => (int) $row['workspace_id'],
+                'title' => (string) $row['title'],
+                'updated_at' => (string) $row['updated_at'],
+                'matches' => $this->countMatches($body, $needle),
+                'snippet' => $this->snippet($body, $needle),
+            ];
+        }
+
+        return $out;
+    }
+
+    /** How many times the needle appears in the body (0 = title-only hit). */
+    private function countMatches(string $body, string $needle): int
+    {
+        if ($needle === '' || $body === '') {
+            return 0;
+        }
+        return mb_substr_count(mb_strtolower($body), $needle);
+    }
+
+    /** ~160 characters of body centred on the first match. */
+    private function snippet(string $body, string $needle): string
+    {
+        $flat = trim(preg_replace('/\s+/u', ' ', $body) ?? '');
+        if ($flat === '') {
+            return '';
+        }
+        $at = mb_stripos($flat, $needle);
+        if ($at === false) {
+            return mb_substr($flat, 0, 160) . (mb_strlen($flat) > 160 ? '…' : '');
+        }
+        $start = max(0, $at - 60);
+        $text = mb_substr($flat, $start, 160);
+        return ($start > 0 ? '…' : '') . $text . ($start + 160 < mb_strlen($flat) ? '…' : '');
     }
 
     public function create(int $userId, int $workspaceId, string $relativePath, string $content, ?string $localPath = null): int

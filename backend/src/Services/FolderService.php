@@ -305,12 +305,16 @@ final class FolderService
         }
 
         // Validate all folder IDs belong to this workspace
+        if (empty($folderIds)) return;
         $placeholders = implode(',', array_fill(0, count($folderIds), '?'));
         $checkStmt = $this->pdo->prepare(
             "SELECT bit_id FROM bit_folders WHERE workspace_id = ? AND bit_id IN ($placeholders)"
         );
         $checkStmt->execute(array_merge([$workspaceId], array_map('intval', $folderIds)));
-        $valid = new Set(array_map(fn($r) => (int) $r['bit_id'], $checkStmt->fetchAll()));
+        $validIds = [];
+        foreach ($checkStmt->fetchAll() as $r) {
+            $validIds[] = (int) $r['bit_id'];
+        }
 
         $position = 1;
         if ($parentFolderId !== null) {
@@ -320,7 +324,7 @@ final class FolderService
                  WHERE parent_bit_id = :parent AND child_bit_id = :child AND relation_type = 'member'"
             );
             foreach ($folderIds as $fid) {
-                if (!$valid->has((int) $fid)) continue;
+                if (!in_array((int) $fid, $validIds, true)) continue;
                 $stmt->execute([
                     'position' => $position++,
                     'parent' => $parentFolderId,
@@ -333,7 +337,7 @@ final class FolderService
                 'UPDATE bit_folders SET position = :position WHERE bit_id = :bit_id AND workspace_id = :workspace_id'
             );
             foreach ($folderIds as $fid) {
-                if (!$valid->has((int) $fid)) continue;
+                if (!in_array((int) $fid, $validIds, true)) continue;
                 $stmt->execute([
                     'position' => $position++,
                     'bit_id' => (int) $fid,

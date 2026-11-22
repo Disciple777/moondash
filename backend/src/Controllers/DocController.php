@@ -57,6 +57,22 @@ final class DocController
         Response::json(['doc' => $detail]);
     }
 
+    /** Workspace-wide search across titles and bodies. */
+    public function search(Request $request): void
+    {
+        $userId = Auth::userId($this->app, $request);
+        /** @var DocService $service */
+        $service = $this->app->get(DocService::class);
+
+        $results = $service->search(
+            $userId,
+            (int) $request->input('workspace_id'),
+            (string) $request->input('q', '')
+        );
+
+        Response::json(['results' => $results]);
+    }
+
     public function update(Request $request): void
     {
         $userId = Auth::userId($this->app, $request);
@@ -72,6 +88,26 @@ final class DocController
         );
 
         Response::json($result);
+    }
+
+    /**
+     * The document's display alias. Sent as its own request rather than as
+     * part of update() because setting an alias must not touch the body, the
+     * file path or the revision the sync engine watches.
+     */
+    public function alias(Request $request): void
+    {
+        $userId = Auth::userId($this->app, $request);
+        /** @var DocService $service */
+        $service = $this->app->get(DocService::class);
+
+        $alias = $request->input('alias');
+
+        Response::json($service->setAlias(
+            $userId,
+            (int) $request->input('doc_id'),
+            $alias === null ? null : (string) $alias
+        ));
     }
 
     public function delete(Request $request): void

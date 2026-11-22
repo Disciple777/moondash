@@ -1,6 +1,18 @@
 import { useState, type FormEvent } from 'react'
-import { HardDrive, Moon, RefreshCw, Smartphone, Globe } from 'lucide-react'
+import { HardDrive, Moon, RefreshCw, Server, Smartphone, Globe } from 'lucide-react'
 import { useApp } from '../state/AppContext'
+import { API_BASE, setApiBase } from '../api/client'
+
+/** Host part of the API URL, for a compact "Server: …" line. */
+function hostOf(url: string): string {
+  // An empty base means same-origin (the app is served next to the API).
+  if (!url) return window.location.host || 'this site'
+  try {
+    return new URL(url).host
+  } catch {
+    return url
+  }
+}
 
 export function Login() {
   const { login, register } = useApp()
@@ -9,6 +21,25 @@ export function Login() {
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // The server is changeable right here: on a fresh desktop install this is the
+  // only screen you can reach, and the Local sync settings sit behind it.
+  const [server, setServer] = useState(API_BASE)
+  const [editingServer, setEditingServer] = useState(false)
+  const [serverDraft, setServerDraft] = useState(API_BASE)
+  const [serverError, setServerError] = useState<string | null>(null)
+
+  const saveServer = () => {
+    const clean = serverDraft.trim().replace(/\/+$/, '')
+    if (!/^https?:\/\/[^\s/]+/i.test(clean)) {
+      setServerError('Enter a full address starting with https://')
+      return
+    }
+    setApiBase(clean)
+    setServer(clean)
+    setEditingServer(false)
+    setServerError(null)
+    setError(null)
+  }
 
   const submit = async (e: FormEvent) => {
     e.preventDefault()
@@ -88,6 +119,58 @@ export function Login() {
             )}
           </button>
         </form>
+
+        <div className="login-server">
+          {editingServer ? (
+            <form
+              className="login-server-edit"
+              onSubmit={(e) => {
+                e.preventDefault()
+                saveServer()
+              }}
+            >
+              <input
+                autoFocus
+                value={serverDraft}
+                onChange={(e) => {
+                  setServerDraft(e.target.value)
+                  setServerError(null)
+                }}
+                placeholder="https://your-host.com/moondash/backend/public"
+                spellCheck={false}
+              />
+              <button type="submit" className="btn primary">
+                Save
+              </button>
+              <button
+                type="button"
+                className="btn ghost"
+                onClick={() => {
+                  setEditingServer(false)
+                  setServerDraft(server)
+                  setServerError(null)
+                }}
+              >
+                Cancel
+              </button>
+              {serverError && <div className="form-error">{serverError}</div>}
+            </form>
+          ) : (
+            <span>
+              <Server size={12} /> Server: <strong title={server}>{hostOf(server)}</strong>
+              <button
+                type="button"
+                className="login-server-change"
+                onClick={() => {
+                  setServerDraft(server)
+                  setEditingServer(true)
+                }}
+              >
+                Change
+              </button>
+            </span>
+          )}
+        </div>
 
         <div className="login-features">
           <span>

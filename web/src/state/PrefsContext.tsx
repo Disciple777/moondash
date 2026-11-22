@@ -1,4 +1,12 @@
-import { createContext, useContext, useState, type ReactNode } from 'react'
+import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
+import {
+  applyAppearance,
+  DEFAULT_APPEARANCE,
+  loadAppearance,
+  saveAppearance,
+  stepZoom,
+  type AppearancePrefs
+} from '../appearance'
 
 /* ------------------------------------------------------------------ */
 /*  Date formatting                                                    */
@@ -98,19 +106,79 @@ export function saveDatePrefs(prefs: DatePrefs): void {
 interface PrefsContextValue {
   datePrefs: DatePrefs
   setDatePrefs: (prefs: DatePrefs) => void
+  /** Type, page width and colour overrides for the note itself. */
+  appearance: AppearancePrefs
+  setAppearance: (prefs: AppearancePrefs) => void
+  /** Zoom the note in or out one step (Ctrl +/-), or back to 100% (Ctrl 0). */
+  zoomBy: (direction: 1 | -1) => void
+  resetZoom: () => void
 }
 
 const PrefsContext = createContext<PrefsContextValue | null>(null)
 
 export function PrefsProvider({ children }: { children: ReactNode }) {
   const [datePrefs, setDatePrefsState] = useState<DatePrefs>(loadDatePrefs)
+  const [appearance, setAppearanceState] = useState<AppearancePrefs>(loadAppearance)
 
   const setDatePrefs = (prefs: DatePrefs) => {
     setDatePrefsState(prefs)
     saveDatePrefs(prefs)
   }
 
-  return <PrefsContext.Provider value={{ datePrefs, setDatePrefs }}>{children}</PrefsContext.Provider>
+  const setAppearance = (prefs: AppearancePrefs) => {
+    setAppearanceState(prefs)
+    saveAppearance(prefs)
+  }
+
+  // Written to <html> rather than through React so the values are in place for
+  // the first paint and for anything rendered outside the tree (popovers).
+  useEffect(() => {
+    applyAppearance(appearance)
+  }, [appearance])
+
+  const zoomBy = (direction: 1 | -1) =>
+    setAppearanceState((prev) => {
+      const next = { ...prev, zoom: stepZoom(prev.zoom, direction) }
+      saveAppearance(next)
+      return next
+    })
+
+  const resetZoom = () =>
+    setAppearanceState((prev) => {
+      const next = { ...prev, zoom: DEFAULT_APPEARANCE.zoom }
+      saveAppearance(next)
+      return next
+    })
+
+  // Ctrl/Cmd +, - and 0 zoom the note. Bound here rather than in the editor so
+  // they work on the workspace home and in the plain-text editor too, and so
+  // the browser's own page zoom doesn't fight the app's.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return
+      // '=' and '+' share a key; Numpad sends 'Add'/'Subtract'.
+      if (e.key === '+' || e.key === '=' || e.code === 'NumpadAdd') {
+        e.preventDefault()
+        zoomBy(1)
+      } else if (e.key === '-' || e.key === '_' || e.code === 'NumpadSubtract') {
+        e.preventDefault()
+        zoomBy(-1)
+      } else if (e.key === '0' || e.code === 'Numpad0') {
+        e.preventDefault()
+        resetZoom()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  return (
+    <PrefsContext.Provider
+      value={{ datePrefs, setDatePrefs, appearance, setAppearance, zoomBy, resetZoom }}
+    >
+      {children}
+    </PrefsContext.Provider>
+  )
 }
 
 export function usePrefs(): PrefsContextValue {

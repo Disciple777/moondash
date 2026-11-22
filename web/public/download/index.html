@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Download Moondash</title>
+  <link rel="icon" href="../icons/icon-192.png" type="image/png" />
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #fafaf9;
+      --card: #ffffff;
+      --text: #37352f;
+      --text-2: #787774;
+      --text-3: #9b9a97;
+      --accent: #5b5bd6;
+      --accent-hover: #4b4bbf;
+      --border: rgba(55, 53, 47, 0.09);
+      --shadow: 0 8px 40px rgba(15, 15, 15, 0.08);
+      --shadow-lg: 0 20px 60px rgba(15, 15, 15, 0.12);
+      --gradient-start: #7b7bd9;
+      --gradient-end: #d6409f;
+      --radius: 16px;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #191919;
+        --card: #202020;
+        --text: #ebebea;
+        --text-2: #9b9a97;
+        --text-3: #6f6e6b;
+        --accent: #8f8fe6;
+        --accent-hover: #a0a0ea;
+        --border: rgba(255, 255, 255, 0.09);
+        --shadow: 0 8px 40px rgba(0, 0, 0, 0.3);
+        --shadow-lg: 0 20px 60px rgba(0, 0, 0, 0.5);
+      }
+    }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .page {
+      width: 100%;
+      max-width: 560px;
+      text-align: center;
+    }
+
+    .logo {
+      font-size: 3rem;
+      margin-bottom: 8px;
+      line-height: 1;
+    }
+
+    h1 {
+      font-size: 2rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      margin-bottom: 8px;
+      background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .subtitle {
+      color: var(--text-2);
+      font-size: 1.05rem;
+      line-height: 1.6;
+      margin-bottom: 36px;
+      max-width: 440px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 40px 36px;
+      margin-bottom: 28px;
+    }
+
+    .platform-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--accent);
+      color: #fff;
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      padding: 5px 12px;
+      border-radius: 20px;
+      margin-bottom: 24px;
+    }
+
+    .platform-badge svg {
+      width: 14px;
+      height: 14px;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      background: var(--accent);
+      color: #fff;
+      font-family: inherit;
+      font-size: 1.05rem;
+      font-weight: 600;
+      padding: 14px 32px;
+      border: none;
+      border-radius: 12px;
+      cursor: pointer;
+      text-decoration: none;
+      transition: background 0.15s ease, transform 0.1s ease, box-shadow 0.15s ease;
+      box-shadow: 0 2px 8px rgba(91, 91, 214, 0.3);
+    }
+
+    .btn:hover {
+      background: var(--accent-hover);
+      transform: translateY(-1px);
+      box-shadow: 0 4px 16px rgba(91, 91, 214, 0.4);
+    }
+
+    .btn:active {
+      transform: translateY(0);
+    }
+
+    .btn svg {
+      width: 20px;
+      height: 20px;
+    }
+
+    .version {
+      color: var(--text-3);
+      font-size: 0.82rem;
+      margin-top: 16px;
+    }
+
+    .features {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      text-align: left;
+      margin-top: 32px;
+    }
+
+    .feature {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+    }
+
+    .feature-icon {
+      flex-shrink: 0;
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      background: rgba(91, 91, 214, 0.08);
+      display: grid;
+      place-items: center;
+      margin-top: 1px;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      .feature-icon { background: rgba(143, 143, 230, 0.12); }
+    }
+
+    .feature-icon svg {
+      width: 16px;
+      height: 16px;
+      color: var(--accent);
+    }
+
+    .feature-text {
+      font-size: 0.88rem;
+      line-height: 1.5;
+    }
+
+    .feature-text strong {
+      display: block;
+      color: var(--text);
+      font-weight: 600;
+      margin-bottom: 1px;
+    }
+
+    .feature-text span {
+      color: var(--text-2);
+    }
+
+    .divider {
+      border: none;
+      border-top: 1px solid var(--border);
+      margin: 24px 0;
+    }
+
+    .alt-links {
+      color: var(--text-3);
+      font-size: 0.85rem;
+      line-height: 1.6;
+    }
+
+    .alt-links a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+
+    .alt-links a:hover {
+      text-decoration: underline;
+    }
+
+    .footer-note {
+      margin-top: 32px;
+      color: var(--text-3);
+      font-size: 0.78rem;
+      line-height: 1.5;
+    }
+
+    @media (max-width: 480px) {
+      .card { padding: 28px 24px; }
+      .features { grid-template-columns: 1fr; }
+      h1 { font-size: 1.65rem; }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="logo">🌙</div>
+    <h1>Download Moondash</h1>
+    <p class="subtitle">A beautiful markdown editor for Windows. Your docs live everywhere — synced across the cloud, desktop, and mobile.</p>
+
+    <div class="card">
+      <div class="platform-badge">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+        Windows Desktop
+      </div>
+      <br />
+      <a class="btn" href="Moondash-1.0.0-win32-x64.zip" download>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        Download for Windows
+      </a>
+      <p class="version">v1.0.0 &middot; Windows 10+ (x64) &middot; ~25 MB zip</p>
+
+      <div class="features">
+        <div class="feature">
+          <div class="feature-icon">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          </div>
+          <div class="feature-text">
+            <strong>Folders sync</strong>
+            <span>Connect a local folder and keep it synced with the cloud</span>
+          </div>
+        </div>
+        <div class="feature">
+          <div class="feature-icon">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          </div>
+          <div class="feature-text">
+            <strong>Offline-first</strong>
+            <span>Edit without internet — changes sync when you're back</span>
+          </div>
+        </div>
+        <div class="feature">
+          <div class="feature-icon">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          </div>
+          <div class="feature-text">
+            <strong>Rich editor</strong>
+            <span>Tables, toggles, task lists, themes &amp; more</span>
+          </div>
+        </div>
+        <div class="feature">
+          <div class="feature-icon">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+          </div>
+          <div class="feature-text">
+            <strong>Open .md files</strong>
+            <span>Double-click any markdown file to open it in Moondash</span>
+          </div>
+        </div>
+      </div>
+
+      <hr class="divider" />
+
+      <div class="alt-links">
+        No Windows? Use the <a href="../">web app</a> instead — works on any device with a browser.
+      </div>
+    </div>
+
+    <p class="footer-note">
+      Open-source &middot; Your docs are yours &middot; Syncs with the Moondash cloud
+    </p>
+  </div>
+</body>
+</html>

@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState, type DragEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from 'react'
 import {
   ArrowUpAZ,
   CalendarClock,
@@ -16,16 +16,19 @@ import {
   Plus,
   Search,
   Settings,
+  Tag,
   Trash2,
   Upload,
   X
 } from 'lucide-react'
+import { api, type SearchHit } from '../api/client'
 import { useApp } from '../state/AppContext'
 import type { DocNode, FolderInfo, FolderMembership, Workspace } from '../types'
 import { SyncPanel } from './SyncPanel'
 import { FolderDialog } from './FolderDialog'
 import { FolderGlyph } from './FolderGlyph'
 import { SettingsModal } from './SettingsModal'
+import { docDisplayName } from '../docNames'
 import { WorkspaceDialog } from './WorkspaceDialog'
 
 type SortBy = 'name' | 'date'
@@ -116,6 +119,13 @@ function buildTree(
   return { folders: roots, unfiled, docFolderIds }
 }
 
+/** A page matches the tree filter on either its shown name or its file name. */
+function matchesName(doc: DocNode, q: string): boolean {
+  return (
+    docDisplayName(doc).toLowerCase().includes(q) || doc.title.toLowerCase().includes(q)
+  )
+}
+
 export function Sidebar({
   mobileOpen = false,
   onNavigate
@@ -140,8 +150,9 @@ export function Sidebar({
     activeDocId,
     openDoc,
     renameDoc,
+    setDocAlias,
     deleteDoc,
-    createDoc,
+    requestNewDoc,
     moveDocToFolder,
     unfileDoc,
     moveFolder,
@@ -153,6 +164,11 @@ export function Sidebar({
   } = useApp()
 
   const [filter, setFilter] = useState('')
+  // Workspace-wide content search. The tree filter above matches page names as
+  // you type (instant, local); this searches inside the pages on the server and
+  // is shown as a separate result list beneath it.
+  const [hits, setHits] = useState<SearchHit[] | null>(null)
+  const [searching, setSearching] = useState(false)
   const [sortBy, setSortBy] = useState<SortBy>(loadSort)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [wsPickerOpen, setWsPickerOpen] = useState(false)
@@ -162,6 +178,8 @@ export function Sidebar({
   const [expanded, setExpanded] = useState<Set<number>>(new Set())
   const [renamingId, setRenamingId] = useState<number | null>(null)
   const [renameDraft, setRenameDraft] = useState('')
+  // The inline input edits either the file name or the alias ("second name").
+  const [renameMode, setRenameMode] = useState<'name' | 'alias'>('name')
   const [dialog, setDialog] = useState<
     { mode: 'create'; parentId: number | null } | { mode: 'edit'; folder: FolderInfo } | null
   >(null)
@@ -187,8 +205,12 @@ export function Sidebar({
     const cmp =
       sortBy === 'name'
         ? (a: DocNode, b: DocNode) =>
-            a.title.localeCompare(b.title, undefined, { sensitivity: 'base', numeric: true })
-        : (a: DocNode, b: DocNode) => timeOf(b) - timeOf(a) || a.title.localeCompare(b.title)
+            docDisplayName(a).localeCompare(docDisplayName(b), undefined, {
+              sensitivity: 'base',
+              numeric: true
+            })
+        : (a: DocNode, b: DocNode) =>
+            timeOf(b) - timeOf(a) || docDisplayName(a).localeCompare(docDisplayName(b))
     const sorted = (list: DocNode[]) => [...list].sort(cmp)
 
     // While searching: keep a folder only if its own name matches or it
@@ -200,7 +222,7 @@ export function Sidebar({
         .map(prune)
         .filter((c): c is FolderNode => c !== null)
       const docs = sorted(
-        nameMatch ? node.docs : node.docs.filter((d) => d.title.toLowerCase().includes(q))
+        nameMatch ? node.docs : node.docs.filter((d) => matchesName(d, q))
       )
       if (nameMatch || children.length > 0 || docs.length > 0) {
         return { ...node, children, docs }
@@ -212,7 +234,7 @@ export function Sidebar({
       folders: base.folders.map(prune).filter((f): f is FolderNode => f !== null),
       unfiled: sorted(
         filtering
-          ? base.unfiled.filter((d) => d.title.toLowerCase().includes(q))
+          ? base.unfiled.filter((d) => matchesName(d, q))
           : base.unfiled
       ),
       docFolderIds: base.docFolderIds
@@ -239,12 +261,52 @@ export function Sidebar({
 
   const commitRename = (id: number) => {
     setRenamingId(null)
-    if (renameDraft.trim() && renameDraft.trim() !== docs.find((d) => d.id === id)?.title) {
-      void renameDoc(id, renameDraft.trim())
+    const next = renameDraft.trim()
+    const doc = docs.find((d) => d.id === id)
+    if (renameMode === 'alias') {
+      // An emptied alias clears it and hands the name back to the file.
+      if (next !== (doc?.alias ?? '')) void setDocAlias(id, next)
+      return
     }
+    if (next && next !== doc?.title) void renameDoc(id, next)
   }
 
   const isMultiSpace = activeWorkspace?.type === 'multi'
+
+  // Debounced so typing doesn't fire a request per keystroke. A query under two
+  // characters would match most of the workspace, so it isn't worth a round trip.
+  const query = filter.trim()
+  useEffect(() => {
+    if (query.length < 2 || activeWorkspaceId === null) {
+      setHits(null)
+      setSearching(false)
+      return
+    }
+    let cancelled = false
+    setSearching(true)
+    const t = window.setTimeout(() => {
+      api
+        .searchDocs(activeWorkspaceId, query)
+        .then((r) => {
+          if (!cancelled) setHits(r.results)
+        })
+        .catch(() => {
+          // Older deployed backends have no search endpoint. The name filter
+          // above still works, so this degrades quietly rather than erroring.
+          if (!cancelled) setHits(null)
+        })
+        .finally(() => {
+          if (!cancelled) setSearching(false)
+        })
+    }, 250)
+    return () => {
+      cancelled = true
+      window.clearTimeout(t)
+    }
+  }, [query, activeWorkspaceId])
+
+  /** Hits whose body matched — a title-only hit is already in the tree above. */
+  const contentHits = useMemo(() => (hits ?? []).filter((h) => h.matches > 0), [hits])
 
   const activeWs = workspaces.find((w) => w.id === activeWorkspaceId) ?? null
 
@@ -334,6 +396,15 @@ export function Sidebar({
     const item = dragItem
     setDragItem(null)
     setDragOver(null)
+    setFileDragOver(false)
+
+    // OS file drop (multi-space import)
+    if (isMultiSpace && e.dataTransfer.types.includes('Files')) {
+      const file = e.dataTransfer.files?.[0]
+      if (file) openMultiModal('link', undefined, file)
+      return
+    }
+
     if (!item) return
 
     if (item.type === 'doc') {
@@ -421,6 +492,8 @@ export function Sidebar({
           <input
             className="tree-rename"
             autoFocus
+            placeholder={renameMode === 'alias' ? 'Second name (empty to clear)' : undefined}
+            aria-label={renameMode === 'alias' ? 'Second name' : 'File name'}
             value={renameDraft}
             onChange={(e) => setRenameDraft(e.target.value)}
             onBlur={() => commitRename(doc.id)}
@@ -431,8 +504,11 @@ export function Sidebar({
             onClick={(e) => e.stopPropagation()}
           />
         ) : (
-          <span className="tree-label">
-            {doc.title}
+          <span
+            className="tree-label"
+            title={doc.alias ? `${docDisplayName(doc)} — file: ${doc.title}` : undefined}
+          >
+            {docDisplayName(doc)}
             {folderCount > 1 && (
               <span className="tree-multi" title="In multiple folders">
                 · {folderCount}
@@ -445,14 +521,27 @@ export function Sidebar({
             <>
               <button
                 className="icon-btn"
-                title="Rename"
+                title="Rename file"
                 onClick={(e) => {
                   e.stopPropagation()
+                  setRenameMode('name')
                   setRenamingId(doc.id)
                   setRenameDraft(doc.title)
                 }}
               >
                 <Pencil size={12} />
+              </button>
+              <button
+                className={`icon-btn${doc.alias ? ' is-on' : ''}`}
+                title={doc.alias ? `Second name: ${doc.alias}` : 'Give it a second name'}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setRenameMode('alias')
+                  setRenamingId(doc.id)
+                  setRenameDraft(doc.alias ?? '')
+                }}
+              >
+                <Tag size={12} />
               </button>
               <button
                 className="icon-btn danger"
@@ -462,12 +551,12 @@ export function Sidebar({
                   if (isMultiSpace) {
                     if (
                       window.confirm(
-                        `Remove “${doc.title}” from this space? The file stays in its workspace.`
+                        `Remove “${docDisplayName(doc)}” from this space? The file stays in its workspace.`
                       )
                     ) {
                       void unlinkDocFromWorkspace(activeWorkspaceId!, doc.id)
                     }
-                  } else if (window.confirm(`Delete “${doc.title}”?`)) {
+                  } else if (window.confirm(`Delete “${docDisplayName(doc)}”?`)) {
                     void deleteDoc(doc.id)
                   }
                 }}
@@ -572,7 +661,7 @@ export function Sidebar({
                   title={isMultiSpace ? 'New page here' : 'New page here'}
                   onClick={(e) => {
                     e.stopPropagation()
-                    void createDoc(info.bit_id)
+                    requestNewDoc(info.bit_id)
                   }}
                 >
                   <Plus size={12} />
@@ -741,7 +830,7 @@ export function Sidebar({
       <div className="search-box">
         <Search size={13} className="search-icon" />
         <input
-          placeholder="Search pages…"
+          placeholder="Search pages and text…"
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
         />
@@ -774,6 +863,33 @@ export function Sidebar({
             <span>Drop to import into “{activeWorkspace?.name}”</span>
           </div>
         )}
+        {isFiltering && (contentHits.length > 0 || searching) && (
+          <div className="search-results">
+            <div className="search-results-head">
+              {searching && contentHits.length === 0
+                ? 'Searching pages…'
+                : `Found inside ${contentHits.length} ${contentHits.length === 1 ? 'page' : 'pages'}`}
+            </div>
+            {contentHits.map((hit) => (
+              <button
+                key={hit.id}
+                type="button"
+                className="search-result"
+                title={hit.relative_path}
+                onClick={() => void openDoc(hit.id)}
+              >
+                <span className="search-result-title">
+                  <FileText size={12} /> {hit.title}
+                  <span className="search-result-count">
+                    {hit.matches} {hit.matches === 1 ? 'match' : 'matches'}
+                  </span>
+                </span>
+                <span className="search-result-snippet">{hit.snippet}</span>
+              </button>
+            ))}
+          </div>
+        )}
+
         {!isFiltering && (
           <div className="tree-toolbar">
             <button
@@ -827,12 +943,17 @@ export function Sidebar({
                 <div
                   className={`tree-section-head${dragOver === 'root' ? ' is-drop' : ''}`}
                   onDragOver={(e) => {
-                    if (!dragItem) return
+                    if (!dragItem && !(isMultiSpace && e.dataTransfer.types.includes('Files'))) return
                     e.preventDefault()
+                    e.stopPropagation()
                     e.dataTransfer.dropEffect = 'move'
                     setDragOver('root')
                   }}
-                  onDragLeave={onDragLeave}
+                  onDragLeave={(e) => {
+                    // Only clear if we truly left the element
+                    if (e.currentTarget.contains(e.relatedTarget as Node)) return
+                    onDragLeave()
+                  }}
                   onDrop={onDropRoot}
                 >
                   <span className="tree-section-label">
@@ -863,8 +984,7 @@ export function Sidebar({
           className="btn primary new-page"
           onClick={() => {
             onNavigate?.()
-            if (isMultiSpace) openMultiModal('create')
-            else void createDoc()
+            requestNewDoc()
           }}
         >
           <Plus size={15} /> New page

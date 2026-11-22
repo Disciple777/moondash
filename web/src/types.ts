@@ -38,6 +38,8 @@ export interface DocNode {
   revision: number
   is_deleted: boolean | number
   title: string
+  /** The document's "second name": shown instead of the title when set. */
+  alias?: string | null
   content_preview: string | null
   created_at: string
   updated_at: string
@@ -57,6 +59,7 @@ export interface DocDetail {
   workspace_id: number | null
   relative_path: string | null
   local_path?: string | null
+  alias?: string | null
   revision: number | null
   is_deleted: boolean | number
 }

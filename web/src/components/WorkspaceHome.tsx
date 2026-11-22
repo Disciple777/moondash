@@ -1,6 +1,8 @@
 import { useMemo, useState } from 'react'
-import { FileText, Layers, Moon, Plus, Upload } from 'lucide-react'
+import { FileText, Layers, Lock, Moon, Plus, Upload } from 'lucide-react'
 import { useApp } from '../state/AppContext'
+import { isEncrypted } from '../crypto/noteCrypto'
+import { docDisplayName } from '../docNames'
 
 function timeAgo(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime()
@@ -15,7 +17,7 @@ function timeAgo(iso: string): string {
 }
 
 export function WorkspaceHome() {
-  const { docs, createDoc, openDoc, activeWorkspace, openMultiModal } = useApp()
+  const { docs, requestNewDoc, openDoc, activeWorkspace, openMultiModal } = useApp()
   const isMultiSpace = activeWorkspace?.type === 'multi'
   const [fileDragOver, setFileDragOver] = useState(false)
 
@@ -76,7 +78,7 @@ export function WorkspaceHome() {
               This workspace is empty. Create your first page here, or bind a local folder with the
               desktop app and it will sync automatically.
             </p>
-            <button className="btn primary" onClick={() => void createDoc()}>
+            <button className="btn primary" onClick={() => requestNewDoc()}>
               <Plus size={15} /> New page
             </button>
           </>
@@ -100,7 +102,7 @@ export function WorkspaceHome() {
             <Layers size={15} /> Add a document
           </button>
         ) : (
-          <button className="btn primary" onClick={() => void createDoc()}>
+          <button className="btn primary" onClick={() => requestNewDoc()}>
             <Plus size={15} /> New page
           </button>
         )}
@@ -113,9 +115,17 @@ export function WorkspaceHome() {
               <FileText size={15} className="home-card-icon" />
               <span className="home-card-time">{timeAgo(doc.updated_at)}</span>
             </div>
-            <div className="home-card-title">{doc.title}</div>
+            <div className="home-card-title">{docDisplayName(doc)}</div>
             <div className="home-card-preview">
-              {doc.content_preview || 'Empty page'}
+              {doc.content_preview && isEncrypted(doc.content_preview) ? (
+                // The stored preview of a protected note is the start of its
+                // envelope — meaningless, so say what it is instead.
+                <span className="home-card-locked">
+                  <Lock size={12} /> Password-protected
+                </span>
+              ) : (
+                doc.content_preview || 'Empty page'
+              )}
             </div>
           </button>
         ))}

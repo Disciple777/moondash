@@ -40,6 +40,9 @@ export function setApiBase(url: string): void {
   if (!clean) return
   localStorage.setItem(API_BASE_KEY, clean)
   API_BASE = clean
+  // Keep the desktop sync engine on the same server — it lives in the main
+  // process and can't see localStorage.
+  void window.moondash?.setApiBase?.(clean, { silent: true })
 }
 
 /**
@@ -53,20 +56,30 @@ export async function resolveApiBase(): Promise<void> {
   // report "Authentication required" forever.
   const existing = getToken()
   if (existing) window.moondash?.setToken?.(existing)
-  if (localStorage.getItem(API_BASE_KEY)) return
+
   if (window.moondash?.getApiBase) {
     try {
       const live = await window.moondash.getApiBase()
-      if (!live) return
+      const stored = localStorage.getItem(API_BASE_KEY)
       const baked = import.meta.env.VITE_API_URL ?? ''
-      if (live === 'http://localhost:8000' && baked) {
-        // Desktop hasn't been pointed at a server yet — use the build-time URL
-        // and persist it silently so the sync engine uses it too.
-        API_BASE = baked
-        void window.moondash.setApiBase?.(baked, { silent: true })
-      } else {
+      // A live value other than the built-in default is what the user picked in
+      // Local sync → Server URL. It wins over a stale localStorage override, and
+      // is mirrored back into localStorage so both sides agree.
+      if (live && live !== 'http://localhost:8000') {
         API_BASE = live
+        if (stored !== live) localStorage.setItem(API_BASE_KEY, live)
+        return
       }
+      // Desktop hasn't been pointed at a server yet — fall back to a stored
+      // override or the build-time URL, and push it to the main process so the
+      // sync engine talks to the same server the UI does.
+      const fallback = stored || baked
+      if (fallback) {
+        API_BASE = fallback
+        void window.moondash.setApiBase?.(fallback, { silent: true })
+        return
+      }
+      if (live) API_BASE = live
     } catch {
       // keep the static value
     }
@@ -102,11 +115,23 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   const token = getToken()
   if (token) headers['Authorization'] = `Bearer ${token}`
 
-  const res = await fetch(`${API_BASE}${path}`, {
-    method,
-    headers,
-    body: body !== undefined ? JSON.stringify(body) : undefined
-  })
+  let res: Response
+  try {
+    res = await fetch(`${API_BASE}${path}`, {
+      method,
+      headers,
+      body: body !== undefined ? JSON.stringify(body) : undefined
+    })
+  } catch {
+    // fetch() rejects before any response: unreachable host, DNS/TLS failure,
+    // a blocked CORS preflight, or an empty API_BASE resolving against a
+    // file:// page. A bare "Failed to fetch" hides which of those it was, so
+    // name the request and the server it was aimed at.
+    throw new ApiError(
+      `Could not reach the server — ${method} ${path} at ${API_BASE || '(no API URL set)'}`,
+      0
+    )
+  }
 
   if (res.status === 401 && !path.includes('/auth/')) {
     setToken(null)
@@ -120,6 +145,19 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   }
 
   return data as T
+}
+
+/** One result from the workspace-wide search. */
+export interface SearchHit {
+  id: number
+  relative_path: string
+  workspace_id: number
+  title: string
+  updated_at: string
+  /** Times the query appears in the body; 0 means the title matched. */
+  matches: number
+  /** Body text around the first match, already collapsed to one line. */
+  snippet: string
 }
 
 export interface PushPayloadFile {
@@ -183,12 +221,26 @@ export const api = {
       content,
       local_path: local_path ?? null
     }),
+  /**
+   * Workspace-wide search over titles and bodies.
+   *
+   * The endpoint is newer than some deployed backends, so a 404 here is not an
+   * error — callers fall back to the local title-only filter.
+   */
+  searchDocs: (workspace_id: number, q: string) =>
+    request<{ results: SearchHit[] }>(
+      'GET',
+      `/api/docs/search?workspace_id=${workspace_id}&q=${encodeURIComponent(q)}`
+    ),
   docDetail: (doc_id: number) =>
     request<{ doc: DocDetail }>('GET', `/api/docs/detail?doc_id=${doc_id}`),
   updateDoc: (
     doc_id: number,
     patch: { title?: string; content?: string; relative_path?: string }
   ) => request<{ ok: boolean; revision: number }>('PATCH', '/api/docs', { doc_id, ...patch }),
+  /** The document's display alias; null or '' clears it. */
+  setDocAlias: (doc_id: number, alias: string | null) =>
+    request<{ ok: boolean; alias: string | null }>('PATCH', '/api/docs/alias', { doc_id, alias }),
   deleteDoc: (doc_id: number) =>
     request<{ ok: boolean; revision: number }>('DELETE', `/api/docs?doc_id=${doc_id}`),
 
@@ -243,5 +295,19 @@ export const api = {
     ),
   /** Linked-in-place docs (local_path) across all workspaces + the hidden external workspace id. */
   externalSync: () =>
-    request<{ workspace_id: number; entries: SyncEntry[] }>('GET', '/api/sync/external')
+    request<{ workspace_id: number; entries: SyncEntry[] }>('GET', '/api/sync/external'),
+
+  /** Import a file into a multi-space in one atomic call. */
+  importIntoMulti: (
+    file_name: string,
+    content: string,
+    workspace_id: number,
+    folder_id?: number | null
+  ) =>
+    request<{ bit_id: number }>('POST', '/api/multi/import', {
+      file_name,
+      content,
+      workspace_id,
+      folder_id: folder_id ?? null
+    })
 }

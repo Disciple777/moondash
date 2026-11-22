@@ -268,6 +268,66 @@ ipcMain.handle('app:pullOpenFiles', () => {
 // Window
 // --------------------------------------------------------------------- //
 
+/**
+ * Bring the window back after a renderer crash.
+ *
+ * When the renderer process dies — most often a GPU hiccup while the window is
+ * hidden or being restored — Electron leaves the frame up but blank, with no
+ * error and no way back except restarting the app. Reloading the contents
+ * restores it in place. Unsaved editor state is lost either way, but the
+ * desktop app writes edits straight to disk, so a reload picks up where the
+ * file left off.
+ *
+ * Guarded so a page that crashes on load can't spin: at most RELOAD_LIMIT
+ * automatic reloads inside RELOAD_WINDOW_MS, after which the window is left
+ * alone rather than looping.
+ */
+const RELOAD_LIMIT = 3
+const RELOAD_WINDOW_MS = 60_000
+
+function attachCrashRecovery(win) {
+  let attempts = []
+
+  const recover = (reason) => {
+    if (!win || win.isDestroyed()) return
+    const now = Date.now()
+    attempts = attempts.filter((t) => now - t < RELOAD_WINDOW_MS)
+    if (attempts.length >= RELOAD_LIMIT) {
+      console.error(`[moondash] ${reason}; reload limit reached, leaving the window as is`)
+      return
+    }
+    attempts.push(now)
+    console.error(`[moondash] ${reason}; reloading the window`)
+    // reloadIgnoringCache: a crashed renderer can leave a poisoned cache entry.
+    win.webContents.reloadIgnoringCache()
+  }
+
+  win.webContents.on('render-process-gone', (_event, details) => {
+    // 'clean-exit' is a normal teardown (app quitting), not a crash.
+    if (details && details.reason === 'clean-exit') return
+    recover(`renderer gone (${(details && details.reason) || 'unknown'})`)
+  })
+
+  // A failed load leaves the same blank frame. Ignore user-cancelled loads
+  // (code -3) and sub-frame failures.
+  win.webContents.on('did-fail-load', (_event, errorCode, errorDescription, _url, isMainFrame) => {
+    if (!isMainFrame || errorCode === -3) return
+    recover(`load failed (${errorCode} ${errorDescription})`)
+  })
+
+  win.webContents.on('unresponsive', () => {
+    console.error('[moondash] renderer unresponsive')
+  })
+
+  // The menu bar is hidden, so there is no Ctrl+R. Wire one up as a manual
+  // escape hatch for anything the handlers above don't catch.
+  win.webContents.on('before-input-event', (_event, input) => {
+    if (input.type !== 'keyDown') return
+    const isReload = input.key === 'F5' || ((input.control || input.meta) && input.key.toLowerCase() === 'r')
+    if (isReload) win.webContents.reloadIgnoringCache()
+  })
+}
+
 function createWindow() {
   const apiBase = loadSettings().apiBase || defaultApiBase()
 
@@ -284,11 +344,16 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
+      // The editor keeps debounced saves and sync timers running; letting
+      // Chromium throttle them while the window is in the background is how
+      // edits go missing after alt-tabbing away.
+      backgroundThrottling: false,
       additionalArguments: [`--moondash-api-base=${encodeURIComponent(apiBase)}`]
     }
   })
 
   mainWindow.setMenuBarVisibility(false)
+  attachCrashRecovery(mainWindow)
 
   // NOTE: we do NOT drain pendingOpenFiles here. React mounts after
   // did-finish-load, so the listener isn't registered yet. Instead,
@@ -523,6 +588,15 @@ if (!gotLock) {
       if (mainWindow.isMinimized()) mainWindow.restore()
       mainWindow.focus()
     }
+  })
+
+  // A dead GPU process can leave the window painted blank even though the
+  // renderer is still alive — reloading re-attaches it to the new one.
+  app.on('child-process-gone', (_event, details) => {
+    if (!details || details.type !== 'GPU' || details.reason === 'clean-exit') return
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    console.error(`[moondash] GPU process gone (${details.reason}); reloading the window`)
+    mainWindow.webContents.reloadIgnoringCache()
   })
 
   app.whenReady().then(async () => {

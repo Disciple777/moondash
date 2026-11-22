@@ -86,9 +86,11 @@ npm run build          # production build → web/dist (deployable anywhere, use
 ```
 
 The build uses **relative paths** (`base: './'`), so `web/dist` works from any subfolder — and
-from the Electron `file://` window. At build time you can set `VITE_API_URL` to the full API base
-(e.g. `https://your-host.com/moondash/backend/public`). You can also change the server at runtime
-without rebuilding, from the browser console:
+from the Electron `file://` window. Production builds bake in the API base from
+`web/.env.production` (`VITE_API_URL=https://guatermelon.com/moondash/backend/public`), so a
+fresh desktop install on a new PC can log in straight away. The **login screen** shows which
+server the app talks to and has a *Change* link to point it elsewhere (this also updates the
+desktop sync engine). You can also change the server from the browser console:
 
 ```js
 localStorage.setItem('moondash.apiBase', 'https://your-host.com/moondash/backend/public')
@@ -113,6 +115,24 @@ cd desktop
 npm install            # downloads Electron (~100 MB)
 npm start              # builds the web app if needed, then launches Electron
 ```
+
+#### Building a Windows .exe
+
+To package the desktop app into a standalone `.exe` for distribution:
+
+```bash
+# 1. Build the web app first (if you haven't already)
+cd web && npm run build
+
+# 2. Package the Electron app
+cd ../desktop && npm run package
+```
+
+This produces:
+- `desktop/dist-release/Moondash-win32-x64/Moondash.exe` — the standalone app
+- `desktop/dist-release/Moondash-1.0.0-win32-x64.zip` — zip ready to share
+
+To install: run `Moondash.exe` directly, or extract the zip and run it from there.
 
 In the app: create/log into your account → pick a workspace → **Local sync → Connect a folder**.
 If your API is hosted remotely (not `localhost:8000`), set it first: **Local sync → ⚙️ Server
@@ -274,7 +294,66 @@ per-user `workspaces` row of `type='external'` (auto-created, never listed). The
 linked-file engine (`desktop/src/linked-sync.js`) polls `GET /api/sync/external`, pushes disk
 changes, and pulls cloud changes — same LWW-by-date policy as folder sync.
 
+## Password-protected notes
+
+Any page can be sealed with a password: the lock button in the note toolbar asks for one
+(twice), and from then on the note is **encrypted before it is written anywhere**. The `.md`
+file on disk, the `bits` row, `bit_notes.body` and `content_preview` in the cloud, and
+everything the sync engine pushes all hold only an opaque envelope:
+
+```
+-----BEGIN MOONDASH ENCRYPTED NOTE-----
+v1.310000.<salt>.<iv>.<ciphertext>
+-----END MOONDASH ENCRYPTED NOTE-----
+```
+
+- **Crypto** — PBKDF2-HMAC-SHA256 (310,000 iterations, the OWASP floor, with a fresh 16-byte
+  salt per note) derives a 256-bit key; the body is sealed with AES-256-GCM under a fresh
+  12-byte IV on every save. Keys are derived non-extractable via Web Crypto and held in memory
+  for the session only — never written to disk, never sent to the server. Closing the app or
+  signing out re-locks everything.
+- **Opening one** — the lock screen replaces the editor until the right password arrives, and it
+  asks **every time the note is opened**, even if it was unlocked earlier in the same session.
+  This works for workspace pages and for `.md`/`.txt` files double-clicked from disk.
+- **A wrong password is reported as wrong**, not silently decoded into garbage. That is
+  deliberate: GCM authenticates the ciphertext, so a bad password (or a file edited behind the
+  app's back) fails cleanly and the note is left untouched. Showing plausible garbage instead
+  would let the autosave write it back over the real note.
+- **Not protected** — the note's title/filename, its timestamps and its size stay in the clear.
+  Only the body is encrypted.
+- **There is no recovery.** Forget the password and the note is gone; there is no reset and no
+  backdoor. Removing protection (same button) writes the note back as ordinary text.
+
+## File fidelity (what you write is what's on disk)
+
+Notes are real `.md` / `.txt` files, and the editor autosaves, so the editor must never
+rewrite what it can't show. A note read from disk is written back byte-for-byte unless you
+actually change it (`web/src/extensions/MarkdownFidelity.ts`, covered by
+`npm run test:fidelity`):
+
+- **Line breaks** — a newline inside a paragraph is a real line break (not joined into one line).
+- **Blank lines** — extra blank lines between blocks are kept as empty lines, and pressing Enter
+  several times is saved as blank lines.
+- **Angle brackets** — text like `<something here>`, `List<T>` or `<!-- note -->` is kept as text
+  (pasting it, typing it, or in the raw view). Only the few HTML tags the editor itself uses —
+  text-colour spans, toggles, tables — are treated as HTML.
+- **Backslashes** — Windows paths keep single backslashes.
+- **Line endings** — a Windows (CRLF) file stays CRLF.
+- **`.txt` files** are edited as **plain text** (monospace, no formatting toolbar) and saved exactly
+  as typed — no markdown escaping (`array[0]`, `a_b * 2`, `# not a heading` stay literal).
+  Name a new page `something.txt` to create one.
+- Formatting that markdown itself normalises is written in its canonical form once: `* item`
+  becomes `- item`, `__bold__` becomes `**bold**`, entities like `&copy;` become `©`.
+
 ## Editor extras
+
+- **New page** asks for a name first (no more "Untitled" files) and the page starts empty —
+  the title shown above the note *is* the file name. In a multi-space you pick the workspace
+  that will own the file, then name it.
+- **Block handle** — hover a block to reveal its grip. **Click** it to select the whole block
+  (Shift-click extends the selection), **drag** it to move, **right-click** it to *Turn into*
+  another type: text, heading 1–3, bullet / numbered / to-do list, toggle, quote or code
+  block. Right-clicking a block inside a multi-block selection converts the whole selection.
 
 - **Date shortcut** — type your configured shortcut (default `@date`, set in ⚙️ Settings) and
   today's date is inserted in the format you pick (month-first, day-first, ISO, long/short,
@@ -323,6 +402,13 @@ changes, and pulls cloud changes — same LWW-by-date policy as folder sync.
 - **Mobile layout** — on small screens the sidebar becomes a slide-in drawer opened by the
   menu button, so the note takes the full width. Choosing a page or folder closes it
   automatically.
+
+## Tests
+
+`cd web && npm test` runs every suite: markdown fidelity, encryption, tables, toggles
+(round-trip + keyboard), task-list backspace and block dragging. They use the real
+tiptap-markdown pipeline in jsdom (a dev dependency, pinned to v24 — newer jsdom needs a
+newer Node than 20.15).
 
 ## Roadmap ideas
 

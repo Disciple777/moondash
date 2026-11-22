@@ -13,8 +13,8 @@
  * `task-list-item` / `contains-task-list` classes that tiptap-markdown's
  * updateDOM relies on. It is idempotent — converted tokens no longer match.
  *
- * Registered once on the shared markdown-it instance
- * (`editor.storage.markdown.parser.md`) in Editor.tsx.
+ * Registered once per markdown-it instance by the MarkdownFidelity extension's
+ * parse.setup hook, so it also applies to a note's initial content.
  */
 
 // Structural types only — markdown-it ships no TypeScript declarations.
@@ -34,7 +34,7 @@ interface MdState {
 interface MdLike {
   core: {
     ruler: {
-      after(anchor: string, name: string, fn: (state: MdState) => void): void
+      push(name: string, fn: (state: MdState) => void): void
     }
   }
 }
@@ -42,7 +42,10 @@ interface MdLike {
 const EMPTY_TASK_RE = /^\[([ xX])\]\s*$/
 
 export const emptyTaskListPlugin = (md: MdLike) => {
-  md.core.ruler.after('github-task-lists', 'moondash-empty-task-lists', (state) => {
+  // push (end of the core chain) rather than after('github-task-lists'): the
+  // task-list plugin registers itself during the same parse, sometimes after
+  // this runs, and after() throws when its anchor rule doesn't exist yet.
+  md.core.ruler.push('moondash-empty-task-lists', (state) => {
     const tokens = state.tokens
     for (let i = 2; i < tokens.length; i++) {
       if (

@@ -14,6 +14,11 @@ export interface SlashItem {
   keywords: string[]
   icon: string
   command: (props: { editor: Editor; range: SlashRange }) => void
+  /**
+   * Hide the item when the editor doesn't load the extension it needs.
+   * Omitted means "always available".
+   */
+  enabled?: (editor: Editor) => boolean
 }
 
 const ITEMS: SlashItem[] = [
@@ -97,6 +102,21 @@ const ITEMS: SlashItem[] = [
       editor.chain().focus().deleteRange(range).toggleCodeBlock().run()
   },
   {
+    title: 'Table',
+    description: '3×3 table with a header row',
+    keywords: ['table', 'grid', 'rows', 'columns', 'cells', 'spreadsheet'],
+    icon: '▦',
+    // The table nodes only exist when the Table extensions are loaded.
+    enabled: (editor) => editor.schema.nodes.table !== undefined,
+    command: ({ editor, range }) =>
+      editor
+        .chain()
+        .focus()
+        .deleteRange(range)
+        .insertTable({ rows: 3, cols: 3, withHeaderRow: true })
+        .run()
+  },
+  {
     title: 'Divider',
     description: 'Insert a horizontal rule',
     keywords: ['hr', 'divider', 'line', 'separator'],
@@ -106,10 +126,11 @@ const ITEMS: SlashItem[] = [
   }
 ]
 
-function filterItems(query: string): SlashItem[] {
+function filterItems(query: string, editor: Editor): SlashItem[] {
+  const available = ITEMS.filter((item) => item.enabled?.(editor) ?? true)
   const q = query.trim().toLowerCase()
-  if (q === '') return ITEMS
-  return ITEMS.filter(
+  if (q === '') return available
+  return available.filter(
     (item) =>
       item.title.toLowerCase().includes(q) || item.keywords.some((k) => k.includes(q))
   )
@@ -195,7 +216,7 @@ export const SlashMenu = Extension.create({
         command: ({ editor, range, props }) => {
           props.command({ editor, range })
         },
-        items: ({ query }) => filterItems(query),
+        items: ({ editor, query }) => filterItems(query, editor),
         render: () => {
           let component: ReactRenderer | null = null
           let popup: ReturnType<typeof createPopup> | null = null

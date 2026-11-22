@@ -20,7 +20,13 @@ global.Element = dom.window.Element
 global.HTMLElement = dom.window.HTMLElement
 global.SVGElement = dom.window.SVGElement
 global.getComputedStyle = dom.window.getComputedStyle
-global.navigator = dom.window.navigator
+// defineProperty, not assignment: Node 22 ships `navigator` as a getter-only
+// global, which a plain assignment throws on.
+Object.defineProperty(global, 'navigator', {
+  value: dom.window.navigator,
+  writable: true,
+  configurable: true
+})
 global.requestAnimationFrame = dom.window.requestAnimationFrame?.bind(dom.window)
 global.cancelAnimationFrame = dom.window.cancelAnimationFrame?.bind(dom.window)
 

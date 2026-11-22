@@ -1,7 +1,8 @@
 import { Extension } from '@tiptap/core'
-import { Plugin, PluginKey, type Transaction, type EditorState } from '@tiptap/pm/state'
+import { Plugin, PluginKey, TextSelection, type Transaction, type EditorState } from '@tiptap/pm/state'
 import { Fragment, type Node as PMNode, type ResolvedPos } from '@tiptap/pm/model'
 import type { EditorView } from '@tiptap/pm/view'
+import { BLOCK_TYPES, blockTypeAt, turnInto, type BlockTypeId } from './blockTurnInto'
 
 const KEY = new PluginKey('blockDrag')
 const MIME = 'application/x-moondash-block'
@@ -413,6 +414,7 @@ export const BlockDrag = Extension.create({
   name: 'blockDrag',
 
   addProseMirrorPlugins() {
+    const editor = this.editor
     return [
       new Plugin({
         key: KEY,
@@ -442,8 +444,11 @@ export const BlockDrag = Extension.create({
                 '<circle cx="2.2" cy="2" r="1.5"/><circle cx="6.8" cy="2" r="1.5"/>' +
                 '<circle cx="2.2" cy="8" r="1.5"/><circle cx="6.8" cy="8" r="1.5"/>' +
                 '<circle cx="2.2" cy="14" r="1.5"/><circle cx="6.8" cy="14" r="1.5"/></svg>'
+              grip.title = 'Click to select · drag to move · right-click to turn into…'
               grip.addEventListener('dragstart', onDragStart)
               grip.addEventListener('dragend', onDragEnd)
+              grip.addEventListener('click', onGripClick)
+              grip.addEventListener('contextmenu', onGripContextMenu)
               document.body.appendChild(grip)
             }
             if (!dropLine) {
@@ -576,6 +581,103 @@ export const BlockDrag = Extension.create({
             }
 
             hideUI()
+          }
+
+          // ---- click: select the block -------------------------------------
+          // A click that doesn't turn into a drag selects the whole block's
+          // text (Shift extends the current selection to include it), so it can
+          // then be dragged, copied, deleted or converted as one.
+          const selectRange = (from: number, to: number) => {
+            const { doc } = view.state
+            const sel = TextSelection.between(doc.resolve(from), doc.resolve(to))
+            view.dispatch(view.state.tr.setSelection(sel))
+            view.focus()
+          }
+
+          const onGripClick = (e: MouseEvent) => {
+            if (!dragInfo) return
+            e.preventDefault()
+            const { from, to } = view.state.selection
+            if (e.shiftKey && !view.state.selection.empty) {
+              selectRange(Math.min(from, dragInfo.start), Math.max(to, dragInfo.end))
+            } else {
+              selectRange(dragInfo.start, dragInfo.end)
+            }
+          }
+
+          // ---- right-click: "Turn into" menu ------------------------------
+          let menu: HTMLDivElement | null = null
+
+          const closeMenu = () => {
+            menu?.remove()
+            menu = null
+            document.removeEventListener('mousedown', onOutsideMenu, true)
+            document.removeEventListener('keydown', onMenuKey, true)
+            window.removeEventListener('blur', closeMenu)
+            window.removeEventListener('resize', closeMenu)
+          }
+          const onOutsideMenu = (e: MouseEvent) => {
+            if (menu && !menu.contains(e.target as Node)) closeMenu()
+          }
+          const onMenuKey = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') {
+              e.preventDefault()
+              closeMenu()
+              view.focus()
+            }
+          }
+
+          const onGripContextMenu = (e: MouseEvent) => {
+            e.preventDefault()
+            if (!dragInfo) return
+            closeMenu()
+            // Right-clicking a block that's part of a multi-block selection
+            // converts the whole selection; otherwise just that block.
+            const range = captureSelectionRange(view.state)
+            const inRange = range && dragInfo.start >= range.start && dragInfo.end <= range.end
+            const target = inRange ? range : dragInfo
+            const current = inRange ? null : blockTypeAt(view.state, dragInfo.start, dragInfo.listTypeName)
+            const schemaNodes = view.state.schema.nodes
+
+            menu = document.createElement('div')
+            menu.className = 'block-menu'
+            menu.setAttribute('role', 'menu')
+            const label = document.createElement('div')
+            label.className = 'block-menu-label'
+            label.textContent = inRange ? 'Turn selection into' : 'Turn into'
+            menu.appendChild(label)
+
+            for (const def of BLOCK_TYPES) {
+              if (!schemaNodes[def.requires]) continue
+              const item = document.createElement('button')
+              item.type = 'button'
+              item.className = `block-menu-item${current === def.id ? ' is-active' : ''}`
+              item.setAttribute('role', 'menuitem')
+              const icon = document.createElement('span')
+              icon.className = 'block-menu-icon'
+              icon.textContent = def.icon
+              const text = document.createElement('span')
+              text.textContent = def.label
+              item.append(icon, text)
+              // mousedown, not click: keeps the editor from blurring first.
+              item.addEventListener('mousedown', (ev) => {
+                ev.preventDefault()
+                const id: BlockTypeId = def.id
+                closeMenu()
+                if (current !== id) turnInto(editor, target.start, target.end, id)
+                else view.focus()
+              })
+              menu.appendChild(item)
+            }
+
+            document.body.appendChild(menu)
+            const rect = menu.getBoundingClientRect()
+            menu.style.left = `${Math.max(8, Math.min(e.clientX, window.innerWidth - rect.width - 8))}px`
+            menu.style.top = `${Math.max(8, Math.min(e.clientY, window.innerHeight - rect.height - 8))}px`
+            document.addEventListener('mousedown', onOutsideMenu, true)
+            document.addEventListener('keydown', onMenuKey, true)
+            window.addEventListener('blur', closeMenu)
+            window.addEventListener('resize', closeMenu)
           }
 
           // ---- dragstart / dragend -----------------------------------------
@@ -724,6 +826,7 @@ export const BlockDrag = Extension.create({
 
           return {
             destroy: () => {
+              closeMenu()
               stopAutoScroll()
               document.removeEventListener('mousemove', onMouseMove)
               document.removeEventListener('dragover', onDocDragOver, true)

@@ -8,7 +8,15 @@ import {
   type ReactNode
 } from 'react'
 import { api, getToken, resolveApiBase, setToken } from '../api/client'
+import {
+  createKey,
+  decryptNote,
+  encryptNote,
+  isEncrypted,
+  type NoteKey
+} from '../crypto/noteCrypto'
 import type { DocNode, FolderInfo, FolderMembership, Workspace } from '../types'
+import { toFileName, uniqueFileName } from '../docNames'
 
 const EXTERNAL_DOCS_KEY = 'moondash.externalDocs'
 
@@ -19,6 +27,45 @@ function titleFromRel(rel: string): string {
 }
 
 export type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'
+
+/**
+ * The file name for a new page: what the user typed (made safe for disk), else
+ * "Untitled.md", suffixed `-1`, `-2`… until it's free — both among the
+ * workspace's docs AND on disk. The second check matters on desktop: a file in
+ * the synced folder that hasn't reached the cloud yet would otherwise be
+ * overwritten by the new, empty page.
+ */
+async function freeDocName(
+  requested: string | undefined,
+  taken: Set<string>,
+  existsOnDisk: ((name: string) => Promise<boolean>) | null
+): Promise<string> {
+  const base = toFileName(requested ?? '') || 'Untitled.md'
+  const seen = new Set(taken)
+  for (;;) {
+    const candidate = uniqueFileName(base, seen)
+    if (!existsOnDisk || !(await existsOnDisk(candidate))) return candidate
+    seen.add(candidate)
+  }
+}
+
+/** The local folder bound to a workspace (desktop only), if any. */
+async function bindingFor(workspaceId: number) {
+  const bridge = window.moondash
+  if (!bridge?.isDesktop) return null
+  try {
+    return (await bridge.getBindings()).find((b) => b.workspaceId === workspaceId) ?? null
+  } catch {
+    return null
+  }
+}
+
+/** A new-page request waiting for its name (the naming dialog is open). */
+export interface NewDocTarget {
+  folderId: number | null
+  /** Set when creating from a multi-space: the folder workspace that owns the file. */
+  workspaceId: number | null
+}
 
 /** A file opened directly from disk, not linked to any workspace. */
 export interface QuickOpenFile {
@@ -63,7 +110,7 @@ interface AppContextValue {
   linkDocToWorkspace: (workspaceId: number, docId: number) => Promise<void>
   unlinkDocFromWorkspace: (workspaceId: number, docId: number) => Promise<void>
   /** Create a page inside a (folder) workspace, then link it into the active multi-space. */
-  createDocInWorkspace: (workspaceId: number, folderId?: number | null) => Promise<void>
+  createDocInWorkspace: (workspaceId: number, folderId?: number | null, name?: string) => Promise<void>
   /** Import a file from the user's computer into the active multi-space. */
   importFileIntoMulti: (
     workspaceId: number,
@@ -74,7 +121,7 @@ interface AppContextValue {
   /** Link a file IN PLACE (desktop): keeps its absolute path, no copy into a workspace. */
   importLinkedFileIntoMulti: (
     fileName: string,
-    absPath: string,
+    absPath: string | null,
     content: string,
     folderId?: number | null
   ) => Promise<void>
@@ -86,11 +133,26 @@ interface AppContextValue {
   multiModalFile: File | null
   openMultiModal: (mode: 'link' | 'create', folderId?: number, file?: File) => void
   closeMultiModal: () => void
-  createDoc: (folderId?: number) => Promise<void>
+  /** Create a page in the active workspace. `name` is what the user typed ('' → "Untitled"). */
+  createDoc: (folderId?: number | null, name?: string) => Promise<void>
+  /**
+   * "New page" buttons call this: it opens the naming dialog (going through the
+   * "which workspace?" picker first when the active space is a multi-space).
+   */
+  requestNewDoc: (folderId?: number | null, workspaceId?: number | null) => void
+  /** The pending new-page request while the naming dialog is open. */
+  newDocTarget: NewDocTarget | null
+  cancelNewDoc: () => void
   openDoc: (id: number) => Promise<void>
   closeDoc: () => void
   saveDoc: (id: number, markdown: string) => Promise<void>
   renameDoc: (id: number, newTitle: string) => Promise<void>
+  /**
+   * The document's "second name": what the app shows for it, without renaming
+   * the file. Stored in the cloud, so it follows the doc across devices.
+   * An empty alias clears it.
+   */
+  setDocAlias: (id: number, alias: string) => Promise<void>
   deleteDoc: (id: number) => Promise<void>
   createFolder: (
     name: string,
@@ -113,12 +175,35 @@ interface AppContextValue {
   dismissError: () => void
   /** A file opened directly from disk (not in any workspace). null = none. */
   quickOpenFile: QuickOpenFile | null
+  /** Every file opened from disk this session, in the order they were opened. */
+  quickOpenTabs: QuickOpenFile[]
+  /** Bring an already-open external file back to the front. */
+  switchQuickTab: (absPath: string) => void
+  /** Close one external file's tab, whether or not it is the active one. */
+  closeQuickTab: (absPath: string) => void
   /** Save content back to the quick-opened file on disk. */
   saveQuickFile: (content: string) => Promise<void>
   /** Close the quick-opened file (back to workspace view). */
   closeQuickOpen: () => void
   /** Add the quick-opened file to a multi-space. */
   addToMultiFromQuick: (multiWsId: number) => Promise<void>
+  /** Set when the open doc is password-protected and still sealed. */
+  lockedDoc: DocNode | null
+  /** Set when a file opened straight from disk is password-protected. */
+  lockedQuickFile: QuickOpenFile | null
+  /** Open the locked doc with a password. Throws WrongPasswordError on a mismatch. */
+  unlockDoc: (password: string) => Promise<void>
+  /** Leave a locked doc without unlocking it. */
+  cancelUnlock: () => void
+  /**
+   * Password-protect the open doc from now on. Takes the live editor markdown
+   * so nothing typed since the last save is lost when it is sealed.
+   */
+  protectDoc: (password: string, markdown: string) => Promise<void>
+  /** Remove password protection, saving the note back as plain text. */
+  unprotectDoc: (markdown: string) => Promise<void>
+  /** True when the open doc is encrypted (and currently unlocked for editing). */
+  activeDocProtected: boolean
 }
 
 const AppContext = createContext<AppContextValue | null>(null)
@@ -135,10 +220,26 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [activeDocContent, setActiveDocContent] = useState('')
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle')
   const [quickOpenFile, setQuickOpenFile] = useState<QuickOpenFile | null>(null)
+  // Externally-opened files stay open as tabs, so moving between two files on
+  // disk doesn't mean re-opening them from the OS each time.
+  const [quickOpenTabs, setQuickOpenTabs] = useState<QuickOpenFile[]>([])
   const [error, setError] = useState<string | null>(null)
   const [multiModal, setMultiModal] = useState<'link' | 'create' | null>(null)
   const [multiModalFolderId, setMultiModalFolderId] = useState<number | null>(null)
   const [multiModalFile, setMultiModalFile] = useState<File | null>(null)
+  const [lockedDoc, setLockedDoc] = useState<DocNode | null>(null)
+  const [lockedQuickFile, setLockedQuickFile] = useState<QuickOpenFile | null>(null)
+  const [newDocTarget, setNewDocTarget] = useState<NewDocTarget | null>(null)
+  const [activeDocProtected, setActiveDocProtected] = useState(false)
+
+  /**
+   * Derived keys for notes unlocked in this session, so editing a protected
+   * note doesn't re-prompt on every save. Memory only: never persisted, and
+   * dropped on reload or logout, so closing the app re-locks everything.
+   */
+  const noteKeysRef = useRef<Map<number, NoteKey>>(new Map())
+  /** Same, for files opened straight off disk — keyed by absolute path. */
+  const quickKeysRef = useRef<Map<string, NoteKey>>(new Map())
 
   const docsRef = useRef<DocNode[]>([])
   docsRef.current = docs
@@ -171,6 +272,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const isExternalDoc = useCallback((id: number) => externalDocsRef.current.has(id), [])
 
   const applyTree = useCallback((tree: { docs: DocNode[]; folders: FolderInfo[]; memberships: FolderMembership[] }) => {
+    // Update the refs NOW, not on the next render: callers routinely do
+    // `await refreshTree(); await openDoc(newId)`, and that continuation runs
+    // before React re-renders — openDoc would look the new page up in the stale
+    // list, miss it, and silently open nothing.
+    docsRef.current = tree.docs
+    membershipsRef.current = tree.memberships
     setDocs(tree.docs)
     setFolders(tree.folders)
     setMemberships(tree.memberships)
@@ -238,21 +345,27 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [userEmail, activeWorkspaceId, applyTree])
 
   useEffect(() => {
-    void resolveApiBase()
-    const token = getToken()
-    if (!token) {
-      setReady(true)
-      return
-    }
-    loadWorkspaces()
-      .then(() => {
+    // resolveApiBase() is async on desktop (an IPC round-trip to the main
+    // process), so it MUST finish before the first request — otherwise
+    // API_BASE is still '' and the fetch resolves against the file:// page,
+    // which fails as "Failed to fetch".
+    void (async () => {
+      await resolveApiBase()
+      const token = getToken()
+      if (!token) {
+        setReady(true)
+        return
+      }
+      try {
+        await loadWorkspaces()
         currentEmailRef.current = localStorage.getItem('moondash.email')
         setUserEmail(currentEmailRef.current)
-      })
-      .catch(() => {
+      } catch {
         setToken(null)
-      })
-      .finally(() => setReady(true))
+      } finally {
+        setReady(true)
+      }
+    })()
   }, [loadWorkspaces])
 
   const login = useCallback(
@@ -293,6 +406,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setMemberships([])
     setActiveDocId(null)
     setActiveWorkspaceId(null)
+    // Forget every unlocked note so signing out re-locks them all.
+    noteKeysRef.current.clear()
+    quickKeysRef.current.clear()
+    setLockedDoc(null)
+    setLockedQuickFile(null)
+    setActiveDocProtected(false)
   }, [])
 
   const selectWorkspace = useCallback(
@@ -346,8 +465,29 @@ export function AppProvider({ children }: { children: ReactNode }) {
     async (id: number) => {
       const doc = docsRef.current.find((d) => d.id === id)
       if (!doc) return
+      // A quick-opened file (opened in place from disk) renders instead of the
+      // workspace doc, so opening a real page has to dismiss it — otherwise the
+      // click looks like it did nothing. QuickOpenEditor flushes any pending
+      // edit to disk as it unmounts.
+      setQuickOpenFile(null)
       setSaveStatus('idle')
       const content = await loadContent(doc)
+
+      if (isEncrypted(content)) {
+        // Opening a protected note ALWAYS asks for the password, even if it was
+        // unlocked earlier in this session. The cached key is kept because
+        // saveDoc needs it to re-seal edits while the note is open, but it is
+        // never a way back in — activeDocContent never holds ciphertext, and
+        // nothing is decoded until a password arrives.
+        setLockedDoc(doc)
+        setActiveDocContent('')
+        setActiveDocId(null)
+        setActiveDocProtected(false)
+        return
+      }
+
+      setActiveDocProtected(false)
+      setLockedDoc(null)
       setActiveDocContent(content)
       setActiveDocId(id)
     },
@@ -358,7 +498,48 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const closeDoc = useCallback(() => {
     setActiveDocId(null)
     setActiveDocContent('')
+    setActiveDocProtected(false)
   }, [])
+
+  // ── Password-protected notes ────────────────────────────────────
+  // The key stays in memory for the session; the note on disk and in the cloud
+  // is only ever the sealed envelope.
+
+  /** Open the locked doc. Lets WrongPasswordError through for the lock screen. */
+  const unlockDoc = useCallback(
+    async (password: string) => {
+      const file = lockedQuickFile
+      if (file) {
+        const { plaintext, noteKey } = await decryptNote(file.content, password)
+        quickKeysRef.current.set(file.absPath, noteKey)
+        setQuickOpenFile({ ...file, content: plaintext })
+        setLockedQuickFile(null)
+        setSaveStatus('idle')
+        return
+      }
+      const doc = lockedDoc
+      if (!doc) return
+      const content = await loadContent(doc)
+      const { plaintext, noteKey } = await decryptNote(content, password)
+      noteKeysRef.current.set(doc.id, noteKey)
+      setActiveDocContent(plaintext)
+      setActiveDocProtected(true)
+      setActiveDocId(doc.id)
+      setLockedDoc(null)
+      setSaveStatus('idle')
+    },
+    [lockedDoc, lockedQuickFile, loadContent]
+  )
+
+  const cancelUnlock = useCallback(() => {
+    setLockedQuickFile(null)
+    setLockedDoc(null)
+    setActiveDocId(null)
+    setActiveDocContent('')
+    setActiveDocProtected(false)
+  }, [])
+
+  // protectDoc / unprotectDoc are defined after saveDoc, below.
 
   const saveDoc = useCallback(
     async (id: number, markdown: string) => {
@@ -366,6 +547,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (!doc) return
       setSaveStatus('saving')
       try {
+        // A protected note is re-sealed here, at the single point where every
+        // storage path (local file, cloud, sync engine) converges — so none of
+        // them ever sees the plaintext.
+        const noteKey = noteKeysRef.current.get(id)
+        const payload = noteKey ? await encryptNote(markdown, noteKey) : markdown
         const bridge = window.moondash
         // Linked-in-place docs: write the file at its absolute path
         // (offline-first), then mirror to the cloud. If either fails the
@@ -373,12 +559,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
         // or cloud change pulled).
         if (bridge?.isDesktop && doc.local_path) {
           try {
-            await bridge.writeExternal(doc.local_path, markdown)
+            await bridge.writeExternal(doc.local_path, payload)
           } catch {
             // cloud-only save below still applies
           }
           try {
-            await api.updateDoc(id, { content: markdown })
+            await api.updateDoc(id, { content: payload })
           } catch {
             // engine will catch up
           }
@@ -389,9 +575,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
           if (bridge?.isDesktop && doc.relative_path && localBinding && !isExternalDoc(id)) {
             // Desktop + synced folder: write the local file (offline-first). The
             // folder watcher + sync engine pushes it to the cloud automatically.
-            await bridge.writeLocal(localBinding.workspaceId, doc.relative_path, markdown)
+            await bridge.writeLocal(localBinding.workspaceId, doc.relative_path, payload)
           } else {
-            await api.updateDoc(id, { content: markdown })
+            await api.updateDoc(id, { content: payload })
           }
         }
         setSaveStatus('saved')
@@ -407,7 +593,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   )
 
   const createDoc = useCallback(
-    async (folderId?: number) => {
+    async (folderId?: number | null, requestedName?: string) => {
       try {
         // Multi-spaces don't own files — a new page must be created in a
         // folder workspace first, then linked. Route through the picker.
@@ -423,36 +609,92 @@ export function AppProvider({ children }: { children: ReactNode }) {
           await loadWorkspaces()
         }
 
-        const taken = new Set(docsRef.current.map((d) => d.relative_path))
-        let name = 'Untitled.md'
-        let counter = 1
-        while (taken.has(name)) {
-          name = `Untitled-${counter}.md`
-          counter++
-        }
-        const { bit_id } = await api.createDoc(wsId, name, '# Untitled\n')
+        const binding = await bindingFor(wsId)
+        const name = await freeDocName(
+          requestedName,
+          new Set(docsRef.current.map((d) => d.relative_path)),
+          binding ? async (n) => (await window.moondash!.readLocal(binding.workspaceId, n)) !== null : null
+        )
+        // New pages start empty: the title is the file name, shown above the note.
+        const { bit_id } = await api.createDoc(wsId, name, '')
         if (folderId) {
           await api.addFolderMember(folderId, bit_id)
         }
-        const bridge = window.moondash
-        if (bridge?.isDesktop) {
+        if (binding) {
           try {
-            const bindings = await bridge.getBindings()
-            const binding = bindings.find((b) => b.workspaceId === wsId)
-            if (binding) {
-              await bridge.writeLocal(binding.workspaceId, name, '# Untitled\n')
-            }
+            await window.moondash!.writeLocal(binding.workspaceId, name, '')
           } catch {
             // cloud-only is fine
           }
         }
-        await refreshTree()
+        // The tree of the workspace the page was created IN: refreshTree() would
+        // read a stale id when that workspace was only just created above.
+        applyTree(await api.tree(wsId))
         await openDoc(bit_id)
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Could not create the page')
       }
     },
-    [activeWorkspace, activeWorkspaceId, loadWorkspaces, openDoc, refreshTree]
+    [activeWorkspace, activeWorkspaceId, applyTree, loadWorkspaces, openDoc]
+  )
+
+  /**
+   * Lock the open note from now on: derive a key, save it sealed, then read the
+   * note back to confirm what actually landed on disk is encrypted.
+   *
+   * The read-back matters because saveDoc reports failures through the error
+   * toast instead of throwing — without it a failed save would leave the dialog
+   * claiming success while the note sat there in plain text.
+   */
+  const protectDoc = useCallback(
+    async (password: string, markdown: string) => {
+      const id = activeDocId
+      if (id === null) throw new Error('No note is open')
+      const noteKey = await createKey(password)
+      noteKeysRef.current.set(id, noteKey)
+      try {
+        // saveDoc seals it now that the key is cached for this doc.
+        await saveDoc(id, markdown)
+        const doc = docsRef.current.find((d) => d.id === id)
+        const stored = doc ? await loadContent(doc) : ''
+        if (!isEncrypted(stored)) {
+          throw new Error('The note could not be saved in its protected form.')
+        }
+      } catch (e) {
+        // Leave no half-protected state behind: drop the key so the note keeps
+        // saving as plain text until the user tries again.
+        noteKeysRef.current.delete(id)
+        setActiveDocProtected(false)
+        throw e
+      }
+      setActiveDocProtected(true)
+      setActiveDocContent(markdown)
+    },
+    [activeDocId, saveDoc, loadContent]
+  )
+
+  /** Drop protection: forget the key and write the note back as plain text. */
+  const unprotectDoc = useCallback(
+    async (markdown: string) => {
+      const id = activeDocId
+      if (id === null) throw new Error('No note is open')
+      const previous = noteKeysRef.current.get(id)
+      noteKeysRef.current.delete(id)
+      try {
+        await saveDoc(id, markdown)
+        const doc = docsRef.current.find((d) => d.id === id)
+        const stored = doc ? await loadContent(doc) : ''
+        if (isEncrypted(stored)) {
+          throw new Error('The note is still protected — it could not be unlocked on disk.')
+        }
+      } catch (e) {
+        if (previous) noteKeysRef.current.set(id, previous)
+        throw e
+      }
+      setActiveDocProtected(false)
+      setActiveDocContent(markdown)
+    },
+    [activeDocId, saveDoc, loadContent]
   )
 
   const renameDoc = useCallback(
@@ -491,6 +733,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
       await refreshTree()
     },
     [activeWorkspaceId, isExternalDoc, refreshTree]
+  )
+
+  const setDocAlias = useCallback(
+    async (id: number, alias: string) => {
+      const clean = alias.trim()
+      try {
+        await api.setDocAlias(id, clean === '' ? null : clean)
+        await refreshTree()
+      } catch (e) {
+        // A backend that hasn't had the alias migration applied says so; show
+        // that rather than failing silently on a name the user just typed.
+        setError(e instanceof Error ? e.message : 'Could not save the second name')
+      }
+    },
+    [refreshTree]
   )
 
   const deleteDoc = useCallback(
@@ -603,24 +860,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // new bit into the active multi-space (optionally filing it into a
   // multi-space folder) and open it.
   const createDocInWorkspace = useCallback(
-    async (workspaceId: number, folderId?: number | null) => {
+    async (workspaceId: number, folderId?: number | null, requestedName?: string) => {
       if (activeWorkspaceId === null) return
       await run(async () => {
         const tree = await api.tree(workspaceId)
-        const taken = new Set(tree.docs.filter((d) => !d.is_deleted).map((d) => d.relative_path))
-        let name = 'Untitled.md'
-        let counter = 1
-        while (taken.has(name)) {
-          name = `Untitled-${counter}.md`
-          counter++
-        }
-        const { bit_id } = await api.createDoc(workspaceId, name, '# Untitled\n')
-        const bridge = window.moondash
-        if (bridge?.isDesktop) {
+        const binding = await bindingFor(workspaceId)
+        const name = await freeDocName(
+          requestedName,
+          new Set(tree.docs.map((d) => d.relative_path)),
+          binding ? async (n) => (await window.moondash!.readLocal(binding.workspaceId, n)) !== null : null
+        )
+        const { bit_id } = await api.createDoc(workspaceId, name, '')
+        if (binding) {
           try {
-            const bindings = await bridge.getBindings()
-            const binding = bindings.find((b) => b.workspaceId === workspaceId)
-            if (binding) await bridge.writeLocal(binding.workspaceId, name, '# Untitled\n')
+            await window.moondash!.writeLocal(binding.workspaceId, name, '')
           } catch {
             // cloud-only is fine
           }
@@ -679,12 +932,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // it stays exactly where it lives on disk. Edits in the app write straight to
   // that file, and the desktop linked-file engine mirrors disk changes back.
   const importLinkedFileIntoMulti = useCallback(
-    async (fileName: string, absPath: string, content: string, folderId?: number | null) => {
+    async (fileName: string, absPath: string | null, content: string, folderId?: number | null) => {
       if (activeWorkspaceId === null) return
       await run(async () => {
         const { workspace_id: externalWsId, entries } = await api.externalSync()
+        // /api/sync/external only lists docs linked to a file on disk, so names
+        // taken by web imports (no disk path) come from the workspace's own
+        // tree — otherwise a second "notes.md" failed with "already exists".
+        const { docs: externalDocs } = await api.tree(externalWsId)
         const taken = new Set(
-          entries.filter((e) => !e.is_deleted).map((e) => e.relative_path)
+          [...entries, ...externalDocs].filter((e) => !e.is_deleted).map((e) => e.relative_path)
         )
         const dot = fileName.lastIndexOf('.')
         const stem = dot > 0 ? fileName.slice(0, dot) : fileName
@@ -695,7 +952,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           name = `${stem}-${counter}${ext}`
           counter++
         }
-        const { bit_id } = await api.createDoc(externalWsId, name, content, absPath)
+        const { bit_id } = await api.createDoc(externalWsId, name, content, absPath ?? undefined)
         if (folderId != null) await api.addFolderMember(folderId, bit_id)
         await api.linkDoc(activeWorkspaceId, bit_id)
         await refreshTree()
@@ -718,6 +975,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setMultiModalFolderId(null)
     setMultiModalFile(null)
   }, [])
+
+  const requestNewDoc = useCallback(
+    (folderId?: number | null, workspaceId?: number | null) => {
+      // A multi-space owns no files: pick the folder workspace first; the picker
+      // calls back here with that workspace id.
+      if (activeWorkspace?.type === 'multi' && workspaceId == null) {
+        openMultiModal('create', folderId ?? undefined)
+        return
+      }
+      setNewDocTarget({ folderId: folderId ?? null, workspaceId: workspaceId ?? null })
+    },
+    [activeWorkspace, openMultiModal]
+  )
+
+  const cancelNewDoc = useCallback(() => setNewDocTarget(null), [])
 
   const createFolder = useCallback(
     async (name: string, colorHex: string, iconKey: string | null, parentFolderId?: number | null) => {
@@ -878,7 +1150,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
         // The file is NOT inside any bound workspace.  Open it for
         // reading/editing directly from disk without creating a server-side
         // doc.  The user can later add it to a multi-space from the banner.
-        setQuickOpenFile({ absPath, content, fileName: base })
+        if (isEncrypted(content)) {
+          // Never hand ciphertext to the editor: it would be re-serialised as
+          // markdown on the next autosave and the sealed note would be gone.
+          // As with workspace notes, opening always asks for the password.
+          setLockedQuickFile({ absPath, content, fileName: base })
+          return
+        }
+        const opened: QuickOpenFile = { absPath, content, fileName: base }
+        setQuickOpenFile(opened)
+        setQuickOpenTabs((prev) =>
+          prev.some((t) => t.absPath === absPath)
+            ? prev.map((t) => (t.absPath === absPath ? opened : t))
+            : [...prev, opened]
+        )
         setActiveDocContent(content)
         // Clear any active workspace doc so the editor renders the
         // quick-open view instead of the normal doc view.
@@ -900,16 +1185,50 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setError('Cannot save — not running in Electron')
         return
       }
-      await bridge.writeExternal(qf.absPath, content)
+      const noteKey = quickKeysRef.current.get(qf.absPath)
+      const payload = noteKey ? await encryptNote(content, noteKey) : content
+      await bridge.writeExternal(qf.absPath, payload)
       setQuickOpenFile((prev) => (prev ? { ...prev, content } : null))
+      setQuickOpenTabs((prev) =>
+        prev.map((t) => (t.absPath === qf.absPath ? { ...t, content } : t))
+      )
     },
     [quickOpenFile]
   )
 
+  const switchQuickTab = useCallback(
+    (absPath: string) => {
+      const tab = quickOpenTabs.find((t) => t.absPath === absPath)
+      if (!tab) return
+      setQuickOpenFile(tab)
+      setActiveDocContent(tab.content)
+      setActiveDocId(null)
+    },
+    [quickOpenTabs]
+  )
+
+  const closeQuickTab = useCallback(
+    (absPath: string) => {
+      const at = quickOpenTabs.findIndex((t) => t.absPath === absPath)
+      if (at === -1) return
+      const rest = quickOpenTabs.filter((t) => t.absPath !== absPath)
+      setQuickOpenTabs(rest)
+      if (quickOpenFile?.absPath !== absPath) return
+      // Closing the front tab falls back to its neighbour, the way an editor
+      // does, instead of dropping the user back to the workspace.
+      const next = rest[at] ?? rest[at - 1] ?? null
+      setQuickOpenFile(next)
+      setActiveDocContent(next?.content ?? '')
+    },
+    [quickOpenTabs, quickOpenFile]
+  )
+
   const closeQuickOpen = useCallback(() => {
+    const active = quickOpenFile
+    if (active) setQuickOpenTabs((tabs) => tabs.filter((t) => t.absPath !== active.absPath))
     setQuickOpenFile(null)
     setActiveDocContent('')
-  }, [])
+  }, [quickOpenFile])
 
   const addToMultiFromQuick = useCallback(
     async (multiWsId: number) => {
@@ -932,9 +1251,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
         const { bit_id } = await api.createDoc(externalWsId, name, qf.content, qf.absPath)
         await api.linkDoc(multiWsId, bit_id)
-        // Switch to the multi-space and open the new doc
+        // Switch to the multi-space and open the new doc. selectWorkspace loads
+        // the multi-space's tree itself; a refreshTree() here would still hold
+        // the PREVIOUS workspace id and overwrite it with the wrong pages.
         await selectWorkspace(multiWsId)
-        await refreshTree()
         await openDoc(bit_id)
         setQuickOpenFile(null)
       })
@@ -1006,10 +1326,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
     openMultiModal,
     closeMultiModal,
     createDoc,
+    requestNewDoc,
+    newDocTarget,
+    cancelNewDoc,
     openDoc,
     closeDoc,
     saveDoc,
     renameDoc,
+    setDocAlias,
     deleteDoc,
     createFolder,
     updateFolder,
@@ -1023,9 +1347,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
     refreshTree,
     dismissError,
     quickOpenFile,
+    quickOpenTabs,
+    switchQuickTab,
+    closeQuickTab,
     saveQuickFile,
     closeQuickOpen,
-    addToMultiFromQuick
+    addToMultiFromQuick,
+    lockedDoc,
+    lockedQuickFile,
+    unlockDoc,
+    cancelUnlock,
+    protectDoc,
+    unprotectDoc,
+    activeDocProtected
   }
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>

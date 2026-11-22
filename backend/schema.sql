@@ -77,6 +77,7 @@ CREATE TABLE IF NOT EXISTS `doc_files` (
   `workspace_id` bigint(20) UNSIGNED NOT NULL,
   `bit_id` bigint(20) UNSIGNED NOT NULL,
   `relative_path` varchar(500) NOT NULL,
+  `alias` varchar(200) DEFAULT NULL,
   `content_hash` char(64) NOT NULL,
   `revision` bigint(20) UNSIGNED NOT NULL DEFAULT 1,
   `is_deleted` tinyint(1) NOT NULL DEFAULT 0,

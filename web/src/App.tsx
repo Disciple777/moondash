@@ -5,6 +5,8 @@ import { Login } from './components/Login'
 import { Sidebar } from './components/Sidebar'
 import { Editor } from './components/Editor'
 import { QuickOpenEditor } from './components/QuickOpenEditor'
+import { LockScreen } from './components/NoteLock'
+import { NewDocDialog } from './components/NewDocDialog'
 import { WorkspaceHome } from './components/WorkspaceHome'
 import { MultiSpaceModal } from './components/MultiSpaceModal'
 
@@ -20,7 +22,8 @@ function Splash() {
 }
 
 export default function App() {
-  const { ready, userEmail, activeDoc, quickOpenFile, error, dismissError } = useApp()
+  const { ready, userEmail, activeDoc, quickOpenFile, lockedDoc, lockedQuickFile, error, dismissError } =
+    useApp()
   // Mobile: the sidebar lives in an off-canvas drawer, opened by the menu
   // button and closed by the backdrop or by navigating.
   const [navOpen, setNavOpen] = useState(false)
@@ -46,8 +49,12 @@ export default function App() {
       />
       <Sidebar mobileOpen={navOpen} onNavigate={() => setNavOpen(false)} />
       <main className="main">
-        {quickOpenFile ? (
+        {lockedQuickFile ? (
+          <LockScreen />
+        ) : quickOpenFile ? (
           <QuickOpenEditor />
+        ) : lockedDoc ? (
+          <LockScreen />
         ) : activeDoc ? (
           <Editor key={activeDoc.id} doc={activeDoc} />
         ) : (
@@ -55,6 +62,7 @@ export default function App() {
         )}
       </main>
       <MultiSpaceModal />
+      <NewDocDialog />
       {error && (
         <button className="toast" role="alert" onClick={dismissError} title="Dismiss">
           <AlertTriangle size={14} /> {error}

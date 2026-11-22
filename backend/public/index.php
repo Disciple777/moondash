@@ -7,6 +7,7 @@ require_once __DIR__ . '/../src/bootstrap.php';
 use App\Controllers\AuthController;
 use App\Controllers\DocController;
 use App\Controllers\FolderController;
+use App\Controllers\MultiSpaceController;
 use App\Controllers\SyncController;
 use App\Controllers\WorkspaceController;
 use App\Core\App;
@@ -44,6 +45,8 @@ try {
 
         ['POST', '/api/docs', [DocController::class, 'create']],
         ['GET', '/api/docs/detail', [DocController::class, 'detail']],
+        ['GET', '/api/docs/search', [DocController::class, 'search']],
+        ['PATCH', '/api/docs/alias', [DocController::class, 'alias']],
         ['PATCH', '/api/docs', [DocController::class, 'update']],
         ['DELETE', '/api/docs', [DocController::class, 'delete']],
 
@@ -55,6 +58,8 @@ try {
         ['PATCH', '/api/folders/reorder', [FolderController::class, 'reorderFolders']],
         ['PATCH', '/api/folders/members/order', [FolderController::class, 'reorder']],
         ['POST', '/api/folders/move', [FolderController::class, 'move']],
+
+        ['POST', '/api/multi/import', [MultiSpaceController::class, 'import']],
 
         ['GET', '/api/sync/manifest', [SyncController::class, 'manifest']],
         ['POST', '/api/sync/push', [SyncController::class, 'push']],

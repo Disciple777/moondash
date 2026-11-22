@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { FileText, Loader2, Search, UploadCloud } from 'lucide-react'
-import { api } from '../api/client'
+import { api, ApiError } from '../api/client'
 import { useApp } from '../state/AppContext'
 import type { DocNode, Workspace } from '../types'
 import { FolderGlyph } from './FolderGlyph'
@@ -31,9 +31,11 @@ export function MultiSpaceModal() {
     activeWorkspace,
     docs,
     linkDocToWorkspace,
-    createDocInWorkspace,
+    requestNewDoc,
     importFileIntoMulti,
-    importLinkedFileIntoMulti
+    importLinkedFileIntoMulti,
+    openDoc,
+    refreshTree
   } = useApp()
 
   const [query, setQuery] = useState('')
@@ -96,23 +98,51 @@ export function MultiSpaceModal() {
   }, [multiModalFile])
 
   // Run the import once the pending file is ready (linked-in-place on desktop,
-  // or a target workspace chosen on the web).
+  // or via the single-call import endpoint on web).
   useEffect(() => {
     if (!pending) return
-    const linked = pending.path && pending.content !== undefined
-    if (!linked && pending.wsId === null) return
+    const hasContent = pending.content !== undefined
+    const hasPath = !!pending.path
+    // linked = desktop (has path + content) or web (has content, no path)
+    const linked = hasContent && hasPath
+    const external = hasContent && !hasPath
+    if (!linked && !external && pending.wsId === null) return
     let cancelled = false
     ;(async () => {
       setImporting(true)
       setImportError(null)
       try {
         if (linked) {
+          // Desktop: absPath + content — link in place via the external workspace.
           await importLinkedFileIntoMulti(
             pending.file.name,
             pending.path!,
             pending.content!,
             multiModalFolderId
           )
+        } else if (external) {
+          // Web: one request that creates, links and files the page (several
+          // sequential requests tripped the host's firewall).
+          let bitId: number | null = null
+          try {
+            const res = await api.importIntoMulti(
+              pending.file.name,
+              pending.content!,
+              activeWorkspace!.id,
+              multiModalFolderId
+            )
+            bitId = res.bit_id
+          } catch (e) {
+            // A server still on the previous backend has no such route and
+            // answers the router's generic 404 — fall back to the multi-request
+            // path instead of failing the import with "Not found".
+            if (!(e instanceof ApiError && e.status === 404 && e.message === 'Not found')) throw e
+            await importLinkedFileIntoMulti(pending.file.name, null, pending.content!, multiModalFolderId)
+          }
+          if (bitId !== null) {
+            await refreshTree()
+            await openDoc(bitId)
+          }
         } else {
           const content = await pending.file.text()
           await importFileIntoMulti(pending.wsId!, pending.file.name, content, multiModalFolderId)
@@ -149,21 +179,20 @@ export function MultiSpaceModal() {
     }
   }
 
-  const create = async (workspaceId: number) => {
-    setBusy(true)
-    try {
-      await createDocInWorkspace(workspaceId, multiModalFolderId)
-      closeMultiModal()
-    } finally {
-      setBusy(false)
-    }
+  // Picking the home workspace hands off to the naming dialog, which creates
+  // the page there and links it into this multi-space.
+  const create = (workspaceId: number) => {
+    const folderId = multiModalFolderId
+    closeMultiModal()
+    requestNewDoc(folderId, workspaceId)
   }
 
   /**
    * Accept a picked/dropped file.
    * Desktop: link it IN PLACE — record its absolute path, no copy into a
    * workspace (the file stays exactly where it lives on disk).
-   * Web (no disk access): read the content and ask which workspace should own it.
+   * Web: read the content and link it in the external workspace — no
+   * workspace selection needed.
    */
   const queueFile = async (file: File | null) => {
     if (!file) return
@@ -187,13 +216,19 @@ export function MultiSpaceModal() {
         // fall through to the web flow
       }
     }
-    if (folderWorkspaces.length === 0) {
-      setImportError(
-        'Create a folder workspace first — a multi-space only gathers files that live in your other workspaces.'
-      )
+    // Web: read the file content client-side and link it in the hidden
+    // external workspace — no workspace selection needed.
+    const ext = file.name.split('.').pop()?.toLowerCase() ?? ''
+    if (!['md', 'markdown', 'txt'].includes(ext)) {
+      setImportError('Only .md, .markdown and .txt files can be added.')
       return
     }
-    setPending(folderWorkspaces.length === 1 ? { file, wsId: folderWorkspaces[0].id } : { file, wsId: null })
+    try {
+      const content = await file.text()
+      setPending({ file, content, wsId: null })
+    } catch {
+      setImportError('Could not read the file — please try again.')
+    }
   }
 
   const isLink = multiModal === 'link'
@@ -276,7 +311,7 @@ export function MultiSpaceModal() {
 
         {importError && <div className="import-error">{importError}</div>}
 
-        {pending && pending.wsId === null && !pending.path && !importing && (
+        {pending && pending.wsId === null && !pending.path && pending.content === undefined && !importing && (
           <div className="import-targets">
             <span className="import-targets-label">Where should “{pending.file.name}” live?</span>
             <div className="import-targets-row">
