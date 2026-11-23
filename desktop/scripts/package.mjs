@@ -10,6 +10,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(__dirname, '..');
 const webDist = path.join(root, '..', 'web', 'dist');
 
+// One source of truth for the version: package.json. The app version and the
+// zip name both come from here, so a bump never has to be made twice.
+const { version } = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+
 // Ensure web dist exists
 if (!fs.existsSync(path.join(webDist, 'index.html'))) {
   console.error('ERROR: web/dist not found. Run "npm run build:web" first.');
@@ -33,7 +37,7 @@ const appBundle = await packager({
   dir: root,
   out: path.join(root, 'dist-release'),
   name: 'Moondash',
-  appVersion: '1.0.0',
+  appVersion: version,
   platform: 'win32',
   arch: 'x64',
   icon: path.join(root, 'build', 'icon.ico'),
@@ -81,7 +85,7 @@ if (fs.existsSync(exePath)) {
 // Create a zip for easy distribution
 console.log('\n🗜️  Creating zip archive...');
 const { execSync } = await import('child_process');
-const zipName = 'Moondash-1.0.0-win32-x64.zip';
+const zipName = `Moondash-${version}-win32-x64.zip`;
 const zipPath = path.join(root, 'dist-release', zipName);
 
 try {

@@ -130,7 +130,7 @@ cd ../desktop && npm run package
 
 This produces:
 - `desktop/dist-release/Moondash-win32-x64/Moondash.exe` — the standalone app
-- `desktop/dist-release/Moondash-1.0.0-win32-x64.zip` — zip ready to share
+- `desktop/dist-release/Moondash-1.0.1-win32-x64.zip` — zip ready to share
 
 To install: run `Moondash.exe` directly, or extract the zip and run it from there.
 

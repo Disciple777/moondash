@@ -1,6 +1,6 @@
 {
   "name": "moondash-desktop",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Moondash — Markdown editor with sync, folders, and multi-spaces",
   "private": true,
   "main": "main.js",

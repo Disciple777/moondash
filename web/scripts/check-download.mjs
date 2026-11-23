@@ -32,7 +32,7 @@ const mustBypass = [
   '/moondash/download/',
   '/moondash/download',
   '/moondash/download/index.html',
-  '/moondash/download/Moondash-1.0.0-win32-x64.zip'
+  '/moondash/download/Moondash-1.0.1-win32-x64.zip'
 ]
 const mustServeApp = ['/', '/moondash/', '/moondash/index.html']
 
