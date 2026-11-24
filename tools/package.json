@@ -1,0 +1,10 @@
+{
+  "name": "moondash-tools",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Deploy helpers. Kept out of the web and desktop app dependency trees.",
+  "dependencies": {
+    "basic-ftp": "^5.0.5"
+  }
+}
